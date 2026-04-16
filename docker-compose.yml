@@ -27,5 +27,30 @@ services:
     depends_on:
       - postgres
 
+  sandbox-service:
+    build:
+      context: ./sandbox
+      dockerfile_inline: |
+        FROM rust:1.82-slim AS builder
+        WORKDIR /app
+        COPY . .
+        RUN cargo build --release --bin sandbox-service
+
+        FROM debian:bookworm-slim
+        RUN apt-get update && apt-get install -y ca-certificates docker.io && rm -rf /var/lib/apt/lists/*
+        COPY --from=builder /app/target/release/sandbox-service /usr/local/bin/
+        CMD ["/usr/local/bin/sandbox-service"]
+    ports:
+      - "8091:8091"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/amis-ai:/var/amis-ai
+    environment:
+      SANDBOX_IMAGE: amis-ai-sandbox:uniapp-node20
+      SANDBOX_WORKDIR_ROOT: /var/amis-ai/workdirs
+      SANDBOX_PNPM_STORE: /var/amis-ai/pnpm-store
+      SANDBOX_PORT_RANGE_START: "20000"
+      SANDBOX_PORT_RANGE_END: "21000"
+
 volumes:
   postgres_data:
