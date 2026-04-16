@@ -6,6 +6,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod docker;
 mod port_pool;
 mod state;
+mod handlers;
 
 use state::{AppState, SharedState};
 
@@ -48,6 +49,8 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/debug/state", get(debug_state))
+        .route("/sandboxes", axum::routing::post(handlers::create_sandbox))
+        .route("/sandboxes/:id", axum::routing::delete(handlers::delete_sandbox))
         .with_state(state);
 
     let addr: SocketAddr = "0.0.0.0:8091".parse()?;
