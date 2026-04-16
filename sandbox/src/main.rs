@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/debug/state", get(debug_state))
         .route("/sandboxes", axum::routing::post(handlers::create_sandbox))
         .route("/sandboxes/:id", axum::routing::delete(handlers::delete_sandbox))
+        .route("/sandboxes/:id/exec", axum::routing::post(handlers::exec_command))
         .with_state(state);
 
     let addr: SocketAddr = "0.0.0.0:8091".parse()?;

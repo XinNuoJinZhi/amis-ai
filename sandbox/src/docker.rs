@@ -6,6 +6,13 @@ use bollard::Docker;
 use std::collections::HashMap;
 use thiserror::Error;
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExecResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+}
+
 #[derive(Debug, Error)]
 pub enum DockerError {
     #[error("docker api: {0}")]
@@ -117,6 +124,51 @@ impl DockerClient {
             )
             .await?;
         Ok(())
+    }
+
+    pub async fn exec(
+        &self,
+        container_id: &str,
+        cmd: Vec<String>,
+        cwd: Option<String>,
+    ) -> Result<ExecResult, DockerError> {
+        use bollard::exec::{CreateExecOptions, StartExecResults};
+        use futures_util::StreamExt;
+
+        let exec = self
+            .inner
+            .create_exec(
+                container_id,
+                CreateExecOptions {
+                    cmd: Some(cmd),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    working_dir: cwd,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        if let StartExecResults::Attached { mut output, .. } =
+            self.inner.start_exec(&exec.id, None).await?
+        {
+            while let Some(Ok(msg)) = output.next().await {
+                use bollard::container::LogOutput::*;
+                match msg {
+                    StdOut { message } => stdout.push_str(&String::from_utf8_lossy(&message)),
+                    StdErr { message } => stderr.push_str(&String::from_utf8_lossy(&message)),
+                    Console { message } => stdout.push_str(&String::from_utf8_lossy(&message)),
+                    StdIn { .. } => {}
+                }
+            }
+        }
+
+        let inspect = self.inner.inspect_exec(&exec.id).await?;
+        let exit_code = inspect.exit_code.unwrap_or(0) as i32;
+        Ok(ExecResult { stdout, stderr, exit_code })
     }
 
     pub fn raw(&self) -> &Docker {

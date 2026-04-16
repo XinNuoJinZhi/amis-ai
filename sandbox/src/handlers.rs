@@ -102,3 +102,35 @@ pub async fn delete_sandbox(
 
     Json(json!({"message": "已销毁", "sandbox_id": id})).into_response()
 }
+
+#[derive(Debug, Deserialize)]
+pub struct ExecRequest {
+    pub cmd: Vec<String>,
+    pub cwd: Option<String>,
+}
+
+pub async fn exec_command(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(payload): Json<ExecRequest>,
+) -> impl IntoResponse {
+    let container_id = {
+        let map = state.sandboxes.read().await;
+        match map.get(&id) {
+            Some(sb) => sb.container_id.clone(),
+            None => {
+                return (StatusCode::NOT_FOUND, Json(json!({"error": "沙箱不存在"})))
+                    .into_response();
+            }
+        }
+    };
+
+    match state.docker.exec(&container_id, payload.cmd, payload.cwd).await {
+        Ok(res) => Json(res).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("exec 失败: {e}")})),
+        )
+            .into_response(),
+    }
+}
