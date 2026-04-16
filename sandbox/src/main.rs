@@ -7,6 +7,7 @@ mod docker;
 mod port_pool;
 mod state;
 mod handlers;
+mod dev_runner;
 
 use state::{AppState, SharedState};
 
@@ -52,6 +53,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/sandboxes", axum::routing::post(handlers::create_sandbox))
         .route("/sandboxes/:id", axum::routing::delete(handlers::delete_sandbox))
         .route("/sandboxes/:id/exec", axum::routing::post(handlers::exec_command))
+        .route("/sandboxes/:id/dev-start", axum::routing::post(handlers::dev_start))
+        .route("/sandboxes/:id/dev-status", axum::routing::get(handlers::dev_status))
         .with_state(state);
 
     let addr: SocketAddr = "0.0.0.0:8091".parse()?;

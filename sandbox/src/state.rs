@@ -34,3 +34,14 @@ pub struct AppState {
 }
 
 pub type SharedState = Arc<AppState>;
+
+pub const MAX_RECENT_LOGS: usize = 200;
+
+impl Sandbox {
+    pub fn push_log(&mut self, line: String) {
+        if self.recent_logs.len() >= MAX_RECENT_LOGS {
+            self.recent_logs.remove(0);
+        }
+        self.recent_logs.push(line);
+    }
+}

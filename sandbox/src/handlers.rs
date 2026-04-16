@@ -134,3 +134,135 @@ pub async fn exec_command(
             .into_response(),
     }
 }
+
+use crate::dev_runner::{classify, LogSignal};
+
+pub async fn dev_start(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let (container_id, _port) = {
+        let map = state.sandboxes.read().await;
+        match map.get(&id) {
+            Some(sb) => (sb.container_id.clone(), sb.preview_port),
+            None => {
+                return (StatusCode::NOT_FOUND, Json(json!({"error": "沙箱不存在"})))
+                    .into_response();
+            }
+        }
+    };
+
+    // 标记为 starting
+    {
+        let mut map = state.sandboxes.write().await;
+        if let Some(sb) = map.get_mut(&id) {
+            sb.dev_status = DevStatus::Starting;
+            sb.recent_logs.clear();
+        }
+    }
+
+    // 后台任务：跑 pnpm install && pnpm run dev:h5
+    let state_bg = state.clone();
+    let sandbox_id = id.clone();
+    tokio::spawn(async move {
+        let install_res = state_bg
+            .docker
+            .exec(
+                &container_id,
+                vec!["sh".into(), "-c".into(), "cd /workspace && pnpm install --prefer-offline 2>&1".into()],
+                None,
+            )
+            .await;
+        match install_res {
+            Ok(r) if r.exit_code == 0 => {
+                let state_probe = state_bg.clone();
+                let sid = sandbox_id.clone();
+                let cid = container_id.clone();
+                tokio::spawn(async move {
+                    // nohup 起 vite，重定向日志到文件
+                    let _ = state_probe
+                        .docker
+                        .exec(
+                            &cid,
+                            vec![
+                                "sh".into(),
+                                "-c".into(),
+                                "cd /workspace && nohup sh -c 'pnpm run dev:h5 --host 0.0.0.0 --port 5173 > /tmp/vite.log 2>&1' &".into(),
+                            ],
+                            None,
+                        )
+                        .await;
+
+                    // 轮询 /tmp/vite.log
+                    for _ in 0..120 {
+                        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                        let tail = state_probe
+                            .docker
+                            .exec(
+                                &cid,
+                                vec!["sh".into(), "-c".into(), "tail -n 50 /tmp/vite.log 2>/dev/null || true".into()],
+                                None,
+                            )
+                            .await;
+                        if let Ok(r) = tail {
+                            let mut map = state_probe.sandboxes.write().await;
+                            if let Some(sb) = map.get_mut(&sid) {
+                                for line in r.stdout.lines() {
+                                    sb.push_log(line.to_string());
+                                    match classify(line) {
+                                        LogSignal::Ready(_url) => {
+                                            sb.dev_status = DevStatus::Ready {
+                                                url: format!("http://localhost:{}/", sb.preview_port),
+                                            };
+                                        }
+                                        LogSignal::Failed(reason) => {
+                                            sb.dev_status = DevStatus::Failed { reason };
+                                        }
+                                        LogSignal::Neutral => {}
+                                    }
+                                }
+                                if matches!(sb.dev_status, DevStatus::Ready { .. } | DevStatus::Failed { .. }) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+            Ok(r) => {
+                let mut map = state_bg.sandboxes.write().await;
+                if let Some(sb) = map.get_mut(&sandbox_id) {
+                    sb.dev_status = DevStatus::Failed {
+                        reason: format!("pnpm install 失败 (exit={}): {}", r.exit_code, r.stderr.chars().take(500).collect::<String>()),
+                    };
+                }
+            }
+            Err(e) => {
+                let mut map = state_bg.sandboxes.write().await;
+                if let Some(sb) = map.get_mut(&sandbox_id) {
+                    sb.dev_status = DevStatus::Failed {
+                        reason: format!("pnpm install exec 错误: {e}"),
+                    };
+                }
+            }
+        }
+    });
+
+    Json(json!({"message": "已触发 dev-start", "sandbox_id": id})).into_response()
+}
+
+pub async fn dev_status(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let map = state.sandboxes.read().await;
+    match map.get(&id) {
+        Some(sb) => Json(json!({
+            "dev_status": sb.dev_status,
+            "recent_logs": sb.recent_logs,
+            "preview_port": sb.preview_port,
+        }))
+        .into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({"error": "沙箱不存在"}))).into_response(),
+    }
+}
