@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod port_pool;
+mod docker;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
