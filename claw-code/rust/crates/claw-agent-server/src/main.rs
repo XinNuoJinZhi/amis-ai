@@ -9,6 +9,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod sandbox_client;
 mod state;
+mod tool_executor;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
