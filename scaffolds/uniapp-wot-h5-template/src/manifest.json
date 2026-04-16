@@ -1,0 +1,19 @@
+{
+  "name": "amis-ai-scaffold",
+  "appid": "__UNI__AAAAAA",
+  "description": "amis-ai UniApp + Wot UI H5 脚手架",
+  "versionName": "0.1.0",
+  "versionCode": "1",
+  "transformPx": false,
+  "h5": {
+    "title": "amis-ai 脚手架",
+    "router": {
+      "mode": "history",
+      "base": "/"
+    },
+    "devServer": {
+      "port": 5173,
+      "disableHostCheck": true
+    }
+  }
+}

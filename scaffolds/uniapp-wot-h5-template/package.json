@@ -1,0 +1,29 @@
+{
+  "name": "amis-ai-scaffold-uniapp-wot-h5",
+  "version": "0.1.0",
+  "description": "UniApp + Wot UI H5 脚手架种子项目，供 amis-ai 反向代码生成流水线使用",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:h5": "uni --port 5173",
+    "build:h5": "uni build",
+    "build:h5:prod": "uni build --mode production"
+  },
+  "dependencies": {
+    "vue": "^3.4.21",
+    "@dcloudio/uni-app": "3.0.0-alpha-5000720260416001",
+    "@dcloudio/uni-h5": "3.0.0-alpha-5000720260416001",
+    "wot-design-uni": "^1.6.0",
+    "axios": "^1.7.2"
+  },
+  "devDependencies": {
+    "vite": "^5.2.8",
+    "@dcloudio/vite-plugin-uni": "3.0.0-alpha-5000720260416001",
+    "@dcloudio/types": "^3.4.30",
+    "typescript": "^5.4.5",
+    "@types/node": "^20.14.0",
+    "sass": "^1.77.4",
+    "@vue/tsconfig": "^0.5.1"
+  }
+}
