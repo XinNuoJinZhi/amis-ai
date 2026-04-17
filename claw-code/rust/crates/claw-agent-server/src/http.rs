@@ -99,15 +99,17 @@ pub async fn stop_task(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let mut tasks = state.tasks.write().await;
-    let task = tasks.get_mut(&id).ok_or_else(|| {
+    let task = tasks.remove(&id).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Task not found"})),
         )
     })?;
 
-    task.status = TaskStatus::Stopped;
+    // 广播状态变更事件，然后 task 被 drop 时 msg_tx 也随之 drop，
+    // task_loop 里的 blocking_recv 会收到 None 而退出循环
     let _ = task.tx.send(crate::state::TaskEvent::StatusChange(TaskStatus::Stopped));
+    drop(task);
 
     Ok(Json(serde_json::json!({"status": "stopped"})))
 }

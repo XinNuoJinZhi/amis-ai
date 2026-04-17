@@ -3,9 +3,7 @@ use crate::sandbox_client::SandboxClient;
 use crate::state::{TaskEvent, TaskStatus};
 use crate::tool_executor::SandboxToolExecutor;
 use api::ProviderClient;
-use runtime::{
-    ConversationRuntime, PermissionMode, PermissionPolicy, Session,
-};
+use runtime::{ConversationRuntime, PermissionMode, PermissionPolicy, Session};
 use std::path::PathBuf;
 use tokio::sync::{broadcast, mpsc};
 
@@ -37,32 +35,27 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
         model,
         sandbox_url,
         event_tx,
-        mut msg_rx,
+        msg_rx,
     } = config;
 
     let _ = event_tx.send(TaskEvent::StatusChange(TaskStatus::Running));
 
-    let workdir_path = PathBuf::from(&workdir);
-    let sandbox = SandboxClient::new(sandbox_url);
+    // 把整个 ConversationRuntime 循环跑在一个 blocking thread 上
+    // 用 msg_rx.blocking_recv() 同步接收追加消息
+    let event_tx_outer = event_tx.clone();
+    let handle = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let workdir_path = PathBuf::from(&workdir);
+        let sandbox = SandboxClient::new(sandbox_url);
 
-    let event_tx_clone = event_tx.clone();
-    let workdir_for_run = workdir_path.clone();
-    let sandbox_for_run = sandbox.clone();
-    let sandbox_id_for_run = sandbox_id.clone();
-    let model_for_run = model.clone();
-    let initial_msg = initial_message.clone();
+        let session = Session::new().with_workspace_root(workdir_path.clone());
 
-    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let session = Session::new().with_workspace_root(workdir_for_run.clone());
-
-        let provider = ProviderClient::from_model(&model_for_run)
+        let provider = ProviderClient::from_model(&model)
             .map_err(|e| anyhow::anyhow!("Failed to init provider: {}", e))?;
 
-        let api_client = ProviderRuntimeClient::new(provider, model_for_run, event_tx_clone.clone())
+        let api_client = ProviderRuntimeClient::new(provider, model, event_tx.clone())
             .map_err(|e| anyhow::anyhow!("Failed to init API client: {}", e))?;
 
-        let tool_executor =
-            SandboxToolExecutor::new(sandbox_for_run, sandbox_id_for_run, workdir_for_run);
+        let tool_executor = SandboxToolExecutor::new(sandbox, sandbox_id, workdir_path);
 
         let policy = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
 
@@ -79,40 +72,56 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
             system_prompt,
         );
 
+        // 第一轮：初始消息
+        tracing::info!("Task {} starting initial turn", task_id);
         let summary = runtime
-            .run_turn(initial_msg, None)
-            .map_err(|e| anyhow::anyhow!("run_turn failed: {}", e))?;
-
+            .run_turn(initial_message, None)
+            .map_err(|e| anyhow::anyhow!("initial run_turn failed: {}", e))?;
         tracing::info!(
-            "Task {} first turn completed: {} iterations",
+            "Task {} initial turn done: {} iterations",
             task_id,
             summary.iterations
         );
+        let _ = event_tx.send(TaskEvent::TurnComplete);
+
+        // 后续轮：阻塞接收追加消息，直到 channel 关闭
+        let mut msg_rx = msg_rx;
+        while let Some(msg) = msg_rx.blocking_recv() {
+            tracing::info!("Task {} received follow-up message", task_id);
+            match runtime.run_turn(msg, None) {
+                Ok(summary) => {
+                    tracing::info!(
+                        "Task {} follow-up turn done: {} iterations",
+                        task_id,
+                        summary.iterations
+                    );
+                    let _ = event_tx.send(TaskEvent::TurnComplete);
+                }
+                Err(e) => {
+                    tracing::error!("Task {} follow-up turn failed: {}", task_id, e);
+                    let _ = event_tx.send(TaskEvent::StatusChange(TaskStatus::Failed));
+                    return Err(anyhow::anyhow!("follow-up turn failed: {}", e));
+                }
+            }
+        }
 
         Ok(())
-    })
-    .await;
+    });
 
-    match result {
+    match handle.await {
         Ok(Ok(())) => {
-            let _ = event_tx.send(TaskEvent::TurnComplete);
-            let _ = event_tx.send(TaskEvent::StatusChange(TaskStatus::Succeeded));
+            let _ = event_tx_outer.send(TaskEvent::StatusChange(TaskStatus::Succeeded));
+            Ok(())
         }
         Ok(Err(e)) => {
             tracing::error!("Task execution error: {}", e);
-            let _ = event_tx.send(TaskEvent::StatusChange(TaskStatus::Failed));
+            let _ = event_tx_outer.send(TaskEvent::StatusChange(TaskStatus::Failed));
+            Err(e)
         }
         Err(e) => {
-            tracing::error!("Task spawn error: {}", e);
-            let _ = event_tx.send(TaskEvent::StatusChange(TaskStatus::Failed));
+            tracing::error!("Task spawn join error: {}", e);
+            let _ = event_tx_outer.send(TaskEvent::StatusChange(TaskStatus::Failed));
+            Err(anyhow::anyhow!("spawn_blocking join error: {}", e))
         }
     }
-
-    // 等待后续消息（简化版本，后续迭代可以支持消息追加）
-    while let Some(msg) = msg_rx.recv().await {
-        tracing::info!("Received additional message: {}", msg);
-        // TODO: 复用 ConversationRuntime 跑新 turn
-    }
-
-    Ok(())
 }
