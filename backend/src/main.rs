@@ -10,12 +10,17 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod entity;
 mod utils;
 mod handlers;
-use entity::{user, llm_provider, model_config, generation_history, amis_template};
+mod services;
+use entity::{user, llm_provider, model_config, generation_history, amis_template,
+    project_generation_task, project_task_message, project_task_event};
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: DatabaseConnection,
     pub http_client: reqwest::Client,
+    pub sandbox_url: String,
+    pub claw_agent_url: String,
+    pub workdir_root: String,
 }
 
 #[tokio::main]
@@ -44,6 +49,9 @@ async fn main() {
     let _ = db.execute(builder.build(&schema.create_table_from_entity(model_config::Entity))).await;
     let _ = db.execute(builder.build(&schema.create_table_from_entity(generation_history::Entity))).await;
     let _ = db.execute(builder.build(&schema.create_table_from_entity(amis_template::Entity))).await;
+    let _ = db.execute(builder.build(&schema.create_table_from_entity(project_generation_task::Entity))).await;
+    let _ = db.execute(builder.build(&schema.create_table_from_entity(project_task_message::Entity))).await;
+    let _ = db.execute(builder.build(&schema.create_table_from_entity(project_task_event::Entity))).await;
 
     // pgvector embedding 列和索引（SeaORM 不支持 vector 类型，需要手动 DDL）
     let _ = db.execute_unprepared(
@@ -61,6 +69,14 @@ async fn main() {
     seed_users(&db).await;
     seed_llm_configs(&db).await;
 
+    // 内部服务 URL 配置
+    let sandbox_url = std::env::var("SANDBOX_SERVICE_URL")
+        .unwrap_or_else(|_| "http://localhost:8091".to_string());
+    let claw_agent_url = std::env::var("CLAW_AGENT_URL")
+        .unwrap_or_else(|_| "http://localhost:8090".to_string());
+    let workdir_root = std::env::var("SANDBOX_WORKDIR_ROOT")
+        .unwrap_or_else(|_| "/var/amis-ai/workdirs".to_string());
+
     // 禁用系统代理，避免本地代理软件拦截对 LLM API 的请求
     let state = AppState {
         db,
@@ -68,6 +84,9 @@ async fn main() {
             .no_proxy()
             .build()
             .expect("无法创建 HTTP 客户端"),
+        sandbox_url,
+        claw_agent_url,
+        workdir_root,
     };
 
     // CORS（开发阶段全放开）
@@ -94,6 +113,12 @@ async fn main() {
         // 模板库
         .route("/api/templates", get(handlers::template::list_templates))
         .route("/api/templates/:id", get(handlers::template::get_template))
+        // 项目生成任务（反向代码生成飞轮）
+        .route("/api/projects/tasks", get(handlers::project_generation::list_tasks).post(handlers::project_generation::create_task))
+        .route("/api/projects/tasks/:id", get(handlers::project_generation::get_task))
+        .route("/api/projects/tasks/:id/message", post(handlers::project_generation::add_message))
+        .route("/api/projects/tasks/:id/stop", post(handlers::project_generation::stop_task))
+        .route("/api/projects/tasks/:id/events", get(handlers::project_events::ws_events))
         // 内部 API（供 Python 服务调用）
         .route("/api/internal/llm/resolve/:task_type", get(handlers::llm_admin::resolve_llm_config))
         // 健康检查
