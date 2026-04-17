@@ -14,6 +14,7 @@ pub struct CreateTaskRequest {
     pub sandbox_id: String,
     pub initial_message: String,
     pub model: Option<String>,
+    pub tech_stack: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

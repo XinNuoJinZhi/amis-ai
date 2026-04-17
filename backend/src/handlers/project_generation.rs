@@ -122,6 +122,7 @@ pub async fn create_task(
         sandbox_id: sandbox_info.id.clone(),
         initial_message,
         model: None,
+        tech_stack: Some(tech_stack.clone()),
     };
 
     let claw_resp = match claw.create_task(claw_req).await {

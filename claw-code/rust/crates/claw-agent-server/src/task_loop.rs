@@ -14,6 +14,7 @@ pub struct TaskLoopConfig {
     pub sandbox_id: String,
     pub model: String,
     pub sandbox_url: String,
+    pub tech_stack: String,
     pub event_tx: broadcast::Sender<TaskEvent>,
     pub msg_rx: mpsc::Receiver<String>,
 }
@@ -34,6 +35,7 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
         sandbox_id,
         model,
         sandbox_url,
+        tech_stack,
         event_tx,
         msg_rx,
     } = config;
@@ -59,10 +61,32 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
 
         let policy = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
 
-        let system_prompt = vec![format!(
-            "You are an AI coding agent working in directory: {}. Use tools to read, write, and run commands.",
-            workdir
+        // 基础 prompt：身份、工作目录、工具使用原则
+        let mut system_prompt = vec![format!(
+            "你是 amis-ai 的反向代码生成智能体。工作目录: {}\n\
+             技术栈: {}\n\n\
+             ## 工作原则\n\
+             1. 先用 `bash: ls -la` 确认种子项目结构\n\
+             2. 严格遵循下方 Skills 文档里的规则\n\
+             3. 使用 read_file/write_file/edit_file 工具操作文件\n\
+             4. 使用 bash 工具执行 shell 命令（如 pnpm install、git 操作）\n\
+             5. 完成编码后，主动调 `bash: pnpm run dev:h5` 验证能启动\n\
+             6. 启动失败时读 Vite 错误日志，定位后修复，最多 5 次自修复",
+            workdir, tech_stack
         )];
+
+        // 根据 tech_stack 加载对应的 Skills bundle
+        let skills_root = crate::skills::default_skills_root();
+        let skill_sections = crate::skills::load_skills_bundle(&skills_root, &tech_stack);
+        let skill_count = skill_sections.len();
+        system_prompt.extend(skill_sections);
+
+        tracing::info!(
+            "Task {} loaded {} skill sections for tech_stack: {}",
+            task_id,
+            skill_count,
+            tech_stack
+        );
 
         let mut runtime = ConversationRuntime::new(
             session,

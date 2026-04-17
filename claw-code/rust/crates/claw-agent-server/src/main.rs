@@ -8,6 +8,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod api_bridge;
 mod http;
 mod sandbox_client;
+mod skills;
 mod state;
 mod task_loop;
 mod tool_executor;

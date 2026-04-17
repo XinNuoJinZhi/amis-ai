@@ -16,6 +16,7 @@ pub struct CreateTaskRequest {
     pub sandbox_id: String,
     pub initial_message: String,
     pub model: Option<String>,
+    pub tech_stack: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,6 +57,7 @@ pub async fn create_task(
         sandbox_id: req.sandbox_id,
         model,
         sandbox_url: state.sandbox_url.clone(),
+        tech_stack: req.tech_stack.unwrap_or_else(|| "uniapp-wot-h5".to_string()),
         event_tx,
         msg_rx,
     });
