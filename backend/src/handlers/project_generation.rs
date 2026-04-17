@@ -8,8 +8,8 @@ use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrde
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::entity::{project_generation_task, project_task_message, project_task_event, user};
-use crate::services::{claw_agent_client::ClawAgentClient, sandbox_client::SandboxClient};
+use crate::entity::{project_generation_task, project_task_message, project_task_event, user, model_config, llm_provider};
+use crate::services::{claw_agent_client::{ClawAgentClient, LlmConfig}, sandbox_client::SandboxClient};
 use crate::utils::jwt;
 use crate::AppState;
 
@@ -117,12 +117,17 @@ pub async fn create_task(
     let claw = ClawAgentClient::new(state.http_client.clone(), state.claw_agent_url.clone());
     let initial_message = build_initial_prompt(&payload.amis_json, payload.extra_prompt.as_deref());
 
+    // 沿用现有 LLM 配置逻辑：优先查 "code_generation" task_type，fallback 到 "generation"
+    let llm_config = fetch_llm_config(&state, "code_generation").await
+        .or(fetch_llm_config(&state, "generation").await);
+
     let claw_req = crate::services::claw_agent_client::CreateTaskRequest {
         workdir: sandbox_info.workdir.clone(),
         sandbox_id: sandbox_info.id.clone(),
         initial_message,
-        model: None,
+        model: llm_config.as_ref().map(|c| c.model.clone()),
         tech_stack: Some(tech_stack.clone()),
+        llm_config,
     };
 
     let claw_resp = match claw.create_task(claw_req).await {
@@ -345,6 +350,33 @@ pub async fn stop_task(
     let _ = active.update(&state.db).await;
 
     Json(json!({"status": "stopped"})).into_response()
+}
+
+/// 从 DB 查指定 task_type 的活跃 LLM 配置（沿用现有 llm_admin 逻辑）
+async fn fetch_llm_config(state: &AppState, task_type: &str) -> Option<LlmConfig> {
+    let config = model_config::Entity::find()
+        .filter(model_config::Column::TaskType.eq(task_type))
+        .filter(model_config::Column::IsActive.eq(true))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()?;
+
+    let provider = llm_provider::Entity::find_by_id(config.provider_id)
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()?;
+
+    if !provider.is_active {
+        return None;
+    }
+
+    Some(LlmConfig {
+        base_url: Some(provider.base_url),
+        api_key: Some(provider.api_key),
+        model: config.model_name,
+    })
 }
 
 async fn mark_task_failed(state: &AppState, task_id: i32, reason: &str) {

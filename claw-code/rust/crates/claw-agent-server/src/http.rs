@@ -10,6 +10,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct LlmConfigInput {
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateTaskRequest {
     pub workdir: String,
@@ -17,6 +24,7 @@ pub struct CreateTaskRequest {
     pub initial_message: String,
     pub model: Option<String>,
     pub tech_stack: Option<String>,
+    pub llm_config: Option<LlmConfigInput>,
 }
 
 #[derive(Debug, Serialize)]
@@ -58,6 +66,11 @@ pub async fn create_task(
         model,
         sandbox_url: state.sandbox_url.clone(),
         tech_stack: req.tech_stack.unwrap_or_else(|| "uniapp-wot-h5".to_string()),
+        llm_config: req.llm_config.map(|c| crate::task_loop::LlmConfig {
+            base_url: c.base_url,
+            api_key: c.api_key,
+            model: c.model,
+        }),
         event_tx,
         msg_rx,
     });

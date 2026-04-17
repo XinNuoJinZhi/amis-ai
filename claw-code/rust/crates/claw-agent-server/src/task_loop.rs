@@ -7,6 +7,12 @@ use runtime::{ConversationRuntime, PermissionMode, PermissionPolicy, Session};
 use std::path::PathBuf;
 use tokio::sync::{broadcast, mpsc};
 
+pub struct LlmConfig {
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: String,
+}
+
 pub struct TaskLoopConfig {
     pub task_id: String,
     pub initial_message: String,
@@ -15,8 +21,56 @@ pub struct TaskLoopConfig {
     pub model: String,
     pub sandbox_url: String,
     pub tech_stack: String,
+    pub llm_config: Option<LlmConfig>,
     pub event_tx: broadcast::Sender<TaskEvent>,
     pub msg_rx: mpsc::Receiver<String>,
+}
+
+/// 注入 LLM 配置到环境变量，并返回 claw-code 能识别的 effective model 名
+/// 策略：只有 claude-* 走 Anthropic，其他全部走 OpenAI 兼容（大多数自建/国产模型都兼容 OpenAI API）
+fn apply_llm_config_to_env(config: &LlmConfig) -> String {
+    let model_lower = config.model.to_lowercase();
+
+    if model_lower.starts_with("claude-") {
+        if let Some(key) = &config.api_key {
+            std::env::set_var("ANTHROPIC_API_KEY", key);
+        }
+        if let Some(url) = &config.base_url {
+            std::env::set_var("ANTHROPIC_BASE_URL", url);
+        }
+        tracing::info!(
+            "LLM config applied as Anthropic: model={}, base_url={:?}",
+            config.model,
+            config.base_url
+        );
+        config.model.clone()
+    } else {
+        // 默认走 OpenAI 兼容路径（Ollama/DeepSeek/通义千问/DashScope/LiteLLM 等）
+        if let Some(key) = &config.api_key {
+            std::env::set_var("OPENAI_API_KEY", key);
+        }
+        if let Some(url) = &config.base_url {
+            std::env::set_var("OPENAI_BASE_URL", url);
+        }
+
+        // 如果 model 不以 claw-code 能识别的前缀开头，加上 "openai/" 前缀让路由生效
+        let effective_model = if model_lower.starts_with("gpt-")
+            || model_lower.starts_with("openai/")
+            || model_lower.starts_with("grok-")
+        {
+            config.model.clone()
+        } else {
+            format!("openai/{}", config.model)
+        };
+
+        tracing::info!(
+            "LLM config applied as OpenAI-compat: original_model={}, effective_model={}, base_url={:?}",
+            config.model,
+            effective_model,
+            config.base_url
+        );
+        effective_model
+    }
 }
 
 pub fn spawn_task_loop(config: TaskLoopConfig) {
@@ -36,9 +90,17 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
         model,
         sandbox_url,
         tech_stack,
+        llm_config,
         event_tx,
         msg_rx,
     } = config;
+
+    // 如果调用方传入了 LLM 配置，注入对应的 env var 并返回 claw-code 能识别的 model 名
+    let effective_model = if let Some(cfg) = &llm_config {
+        apply_llm_config_to_env(cfg)
+    } else {
+        model
+    };
 
     let _ = event_tx.send(TaskEvent::StatusChange(TaskStatus::Running));
 
@@ -51,27 +113,41 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
 
         let session = Session::new().with_workspace_root(workdir_path.clone());
 
-        let provider = ProviderClient::from_model(&model)
+        let provider = ProviderClient::from_model(&effective_model)
             .map_err(|e| anyhow::anyhow!("Failed to init provider: {}", e))?;
 
-        let api_client = ProviderRuntimeClient::new(provider, model, event_tx.clone())
+        let api_client = ProviderRuntimeClient::new(provider, effective_model, event_tx.clone())
             .map_err(|e| anyhow::anyhow!("Failed to init API client: {}", e))?;
 
         let tool_executor = SandboxToolExecutor::new(sandbox, sandbox_id, workdir_path);
 
         let policy = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
 
-        // 基础 prompt：身份、工作目录、工具使用原则
+        // 基础 prompt：身份、工作目录、工具使用原则（强调"只输出工具调用"的纪律）
         let mut system_prompt = vec![format!(
             "你是 amis-ai 的反向代码生成智能体。工作目录: {}\n\
              技术栈: {}\n\n\
-             ## 工作原则\n\
-             1. 先用 `bash: ls -la` 确认种子项目结构\n\
-             2. 严格遵循下方 Skills 文档里的规则\n\
-             3. 使用 read_file/write_file/edit_file 工具操作文件\n\
-             4. 使用 bash 工具执行 shell 命令（如 pnpm install、git 操作）\n\
-             5. 完成编码后，主动调 `bash: pnpm run dev:h5` 验证能启动\n\
-             6. 启动失败时读 Vite 错误日志，定位后修复，最多 5 次自修复",
+             ## 🔥 最重要：你必须通过工具调用完成任务，禁止只输出计划文字\n\n\
+             你**必须**使用以下工具来完成每一步工作：\n\
+             - `bash` 执行 shell 命令（如 `ls -la`、`pnpm install`、`pnpm run dev:h5`）\n\
+             - `read_file` 读取文件内容\n\
+             - `write_file` 写入完整文件\n\
+             - `edit_file` 按字符串替换修改文件\n\
+             - `glob_search` 按通配符查找文件\n\
+             - `grep_search` 按正则搜索内容\n\n\
+             ❌ 禁止：只回复 \"我计划这样做...\" 却不调用任何工具\n\
+             ❌ 禁止：编造文件内容，不通过 read_file 确认就开始修改\n\
+             ✅ 要求：**每条响应至少包含一个工具调用**，除非任务已完整交付\n\n\
+             ## 工作流程（严格顺序）\n\
+             1. **第一步必须**调 `bash: ls -la` 看种子项目结构\n\
+             2. 调 `read_file` 读种子项目的 package.json / pages.json / vite.config.ts\n\
+             3. 根据下方 Skills 文档里的规则，用 write_file / edit_file 创建/修改文件\n\
+             4. 调 `bash: pnpm install`（若需新依赖）\n\
+             5. 调 `bash: pnpm run dev:h5` 启动验证\n\
+             6. 启动失败时读 Vite 错误日志 → 定位 → 修复 → 重启（最多 5 次自修复）\n\n\
+             ## 失败策略\n\
+             - 工具报错时，直接看 error 字段然后调整参数重试，不要光说\"我再试试\"\n\
+             - 文件找不到时先用 `glob_search` 定位，不要假设路径",
             workdir, tech_stack
         )];
 

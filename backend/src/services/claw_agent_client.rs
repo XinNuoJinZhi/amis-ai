@@ -8,6 +8,13 @@ pub struct ClawAgentClient {
     base_url: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LlmConfig {
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateTaskRequest {
     pub workdir: String,
@@ -15,6 +22,7 @@ pub struct CreateTaskRequest {
     pub initial_message: String,
     pub model: Option<String>,
     pub tech_stack: Option<String>,
+    pub llm_config: Option<LlmConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
