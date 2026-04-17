@@ -7,11 +7,9 @@ use runtime::{
     ApiClient, ApiRequest, AssistantEvent, ContentBlock, ConversationMessage, MessageRole,
     RuntimeError,
 };
-use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 
 pub struct ProviderRuntimeClient {
-    rt: Runtime,
     provider: ProviderClient,
     model: String,
     event_tx: broadcast::Sender<TaskEvent>,
@@ -23,11 +21,7 @@ impl ProviderRuntimeClient {
         model: String,
         event_tx: broadcast::Sender<TaskEvent>,
     ) -> Result<Self, RuntimeError> {
-        let rt = Runtime::new()
-            .map_err(|e| RuntimeError::new(format!("Failed to create runtime: {}", e)))?;
-
         Ok(Self {
-            rt,
             provider,
             model,
             event_tx,
@@ -60,7 +54,14 @@ impl ApiClient for ProviderRuntimeClient {
 
         let event_tx = self.event_tx.clone();
         let provider = &self.provider;
-        self.rt.block_on(async move {
+
+        // 使用 current_thread runtime 而不是 multi-thread，避免嵌套 runtime drop panic
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| RuntimeError::new(format!("Failed to create runtime: {}", e)))?;
+
+        rt.block_on(async move {
             let stream = provider
                 .stream_message(&message_request)
                 .await

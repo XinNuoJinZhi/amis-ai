@@ -1,15 +1,11 @@
 use anyhow::Result;
-use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 #[derive(Clone)]
 pub struct SandboxClient {
-    client: Client,
     base_url: String,
 }
 
-// 请求/响应结构体
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateSandboxRequest {
     pub task_id: String,
@@ -47,20 +43,9 @@ pub struct DevStatusResponse {
     pub preview_port: u16,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeleteResponse {
-    pub message: String,
-    pub sandbox_id: String,
-}
-
 impl SandboxClient {
     pub fn new(base_url: String) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap_or_else(|_| Client::new());
-
-        Self { client, base_url }
+        Self { base_url }
     }
 
     pub fn create(&self, task_id: &str) -> Result<CreateSandboxResponse> {
@@ -69,8 +54,10 @@ impl SandboxClient {
             task_id: task_id.to_string(),
         };
 
-        let resp = self.client.post(&url).json(&req).send()?;
-        resp.json::<CreateSandboxResponse>().map_err(Into::into)
+        let resp: CreateSandboxResponse = ureq::post(&url)
+            .send_json(serde_json::to_value(&req)?)?
+            .into_json()?;
+        Ok(resp)
     }
 
     pub fn exec(&self, sandbox_id: &str, cmd: Vec<String>, cwd: Option<&str>) -> Result<ExecResult> {
@@ -80,15 +67,17 @@ impl SandboxClient {
             cwd: cwd.map(|s| s.to_string()),
         };
 
-        let resp = self.client.post(&url).json(&req).send()?;
-        resp.json::<ExecResult>().map_err(Into::into)
+        let resp: ExecResult = ureq::post(&url)
+            .send_json(serde_json::to_value(&req)?)?
+            .into_json()?;
+        Ok(resp)
     }
 
     pub fn dev_start(&self, sandbox_id: &str) -> Result<()> {
         let url = format!("{}/sandboxes/{}/dev-start", self.base_url, sandbox_id);
-        let resp = self.client.post(&url).send()?;
+        let resp = ureq::post(&url).call()?;
 
-        if resp.status().is_success() {
+        if resp.status() < 300 {
             Ok(())
         } else {
             Err(anyhow::anyhow!("Failed to start dev server: {}", resp.status()))
@@ -97,15 +86,15 @@ impl SandboxClient {
 
     pub fn dev_status(&self, sandbox_id: &str) -> Result<DevStatusResponse> {
         let url = format!("{}/sandboxes/{}/dev-status", self.base_url, sandbox_id);
-        let resp = self.client.get(&url).send()?;
-        resp.json::<DevStatusResponse>().map_err(Into::into)
+        let resp: DevStatusResponse = ureq::get(&url).call()?.into_json()?;
+        Ok(resp)
     }
 
     pub fn delete(&self, sandbox_id: &str) -> Result<()> {
         let url = format!("{}/sandboxes/{}", self.base_url, sandbox_id);
-        let resp = self.client.delete(&url).send()?;
+        let resp = ureq::delete(&url).call()?;
 
-        if resp.status().is_success() {
+        if resp.status() < 300 {
             Ok(())
         } else {
             Err(anyhow::anyhow!("Failed to delete sandbox: {}", resp.status()))
