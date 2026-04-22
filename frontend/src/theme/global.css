@@ -1,0 +1,199 @@
+/* amis-ai global styles — v0.dev 风格暗色主题 */
+
+/* 字体按需引入：打包 Geist Variable（sans） + Geist Mono Variable（mono） */
+@import '@fontsource-variable/geist/index.css';
+@import '@fontsource-variable/geist-mono/index.css';
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  color-scheme: dark;
+  background-color: var(--bg, #0A0A0A);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  background-color: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* ——— 选择文本与 caret ——— */
+::selection {
+  background-color: rgba(124, 58, 237, 0.35);
+  color: var(--text);
+}
+
+/* ——— 滚动条：细线 + hover 可见 ——— */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  transition: background-color 120ms ease;
+}
+
+*:hover::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-muted);
+  background-clip: content-box;
+}
+
+/* ——— 链接 ——— */
+a {
+  color: var(--text);
+  text-decoration: none;
+  transition: color 120ms ease;
+}
+
+a:hover {
+  color: var(--accent-cyan);
+}
+
+/* ——— 代码/Kbd ——— */
+code,
+pre,
+kbd {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background-color: var(--surface-elevated);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* ——— AntD 覆写：模态/抽屉遮罩加模糊，去阴影 ——— */
+.ant-modal-mask,
+.ant-drawer-mask {
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  background-color: rgba(0, 0, 0, 0.7) !important;
+}
+
+.ant-modal-content,
+.ant-drawer-content {
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6) !important;
+}
+
+/* AntD 默认 Card/Button 带有 shadow-sm，强行抹平 */
+.ant-btn {
+  box-shadow: none !important;
+}
+
+.ant-card {
+  box-shadow: none !important;
+}
+
+/* Menu 选中态的左侧指示条改为 accent-cyan */
+.ant-menu-light .ant-menu-item-selected,
+.ant-menu-dark .ant-menu-item-selected {
+  position: relative;
+}
+
+/* ——— 工具类 ——— */
+.mono {
+  font-family: var(--font-mono);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.subtle {
+  color: var(--text-subtle);
+}
+
+.v0-card {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.v0-card-elevated {
+  background-color: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* 分隔线 */
+.v0-divider {
+  height: 1px;
+  background-color: var(--border-subtle);
+}
+
+/* 状态指示灯（运行中的小圆点） */
+.v0-pulse {
+  position: relative;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--accent-cyan);
+}
+
+.v0-pulse::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background-color: var(--accent-cyan);
+  opacity: 0.35;
+  animation: v0-pulse-ring 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes v0-pulse-ring {
+  0% { transform: scale(0.6); opacity: 0.5; }
+  80%, 100% { transform: scale(1.6); opacity: 0; }
+}
+
+/* 全局淡入 */
+@keyframes v0-fade-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.v0-fade-in {
+  animation: v0-fade-in 180ms ease both;
+}
+
+/* xterm 在暗色下的默认底色（防止白边） */
+.xterm,
+.xterm-viewport {
+  background-color: var(--bg) !important;
+}

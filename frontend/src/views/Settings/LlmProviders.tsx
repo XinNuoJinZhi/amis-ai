@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Table, Button, Modal, Form, Input, Switch, Space, Popconfirm, Tag, App } from 'antd';
+import { Table, Button, Modal, Form, Input, Switch, Space, Popconfirm, Tag, App, Select } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, ApiOutlined } from '@ant-design/icons';
-import { getProviders, createProvider, updateProvider, deleteProvider, testProvider } from '../../services/llm';
+import { getProviders, createProvider, updateProvider, deleteProvider, testProvider, getProviderModels } from '../../services/llm';
 
 interface ProviderItem {
   id: number;
@@ -10,7 +10,24 @@ interface ProviderItem {
   api_key_hint: string;
   is_active: boolean;
   created_at: string;
+  protocol: string;
+  capability_tier: string;
+  preferred_model: string | null;
 }
+
+const TIER_OPTIONS = [
+  { value: 'fast', label: 'fast（简单页面、省钱省时）' },
+  { value: 'balanced', label: 'balanced（默认，大多数业务）' },
+  { value: 'strong', label: 'strong（复杂向导/多表单）' },
+  { value: 'frontier', label: 'frontier（最贵最强，兜底高难任务）' },
+];
+
+const TIER_TAG_COLORS: Record<string, string> = {
+  fast: 'green',
+  balanced: 'blue',
+  strong: 'orange',
+  frontier: 'red',
+};
 
 export default function LlmProviders() {
   const [providers, setProviders] = useState<ProviderItem[]>([]);
@@ -18,8 +35,18 @@ export default function LlmProviders() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [testingId, setTestingId] = useState<number | null>(null);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [form] = Form.useForm();
   const { message, notification } = App.useApp();
+
+  const loadModelsForProvider = useCallback(async (providerId: number) => {
+    try {
+      const models = await getProviderModels(providerId);
+      setModelOptions(models);
+    } catch {
+      setModelOptions([]);
+    }
+  }, []);
 
   const fetchProviders = useCallback(async () => {
     setLoading(true);
@@ -37,32 +64,46 @@ export default function LlmProviders() {
 
   const handleCreate = () => {
     setEditingId(null);
+    setModelOptions([]);
     form.resetFields();
-    form.setFieldsValue({ is_active: true });
+    form.setFieldsValue({ is_active: true, protocol: 'openai', capability_tier: 'balanced' });
     setModalOpen(true);
   };
 
   const handleEdit = (record: ProviderItem) => {
     setEditingId(record.id);
+    setModelOptions([]);
     form.setFieldsValue({
       name: record.name,
       base_url: record.base_url,
       api_key: '',
       is_active: record.is_active,
+      protocol: record.protocol || 'openai',
+      capability_tier: record.capability_tier || 'balanced',
+      preferred_model: record.preferred_model || undefined,
     });
+    loadModelsForProvider(record.id);
     setModalOpen(true);
   };
 
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
+      const preferred = values.preferred_model?.trim?.() || values.preferred_model || null;
       if (editingId) {
-        const payload: any = { name: values.name, base_url: values.base_url, is_active: values.is_active };
+        const payload: any = {
+          name: values.name,
+          base_url: values.base_url,
+          is_active: values.is_active,
+          protocol: values.protocol,
+          capability_tier: values.capability_tier,
+          preferred_model: preferred || '',
+        };
         if (values.api_key) payload.api_key = values.api_key;
         await updateProvider(editingId, payload);
         message.success('更新成功');
       } else {
-        await createProvider(values);
+        await createProvider({ ...values, preferred_model: preferred });
         message.success('创建成功');
       }
       setModalOpen(false);
@@ -108,6 +149,28 @@ export default function LlmProviders() {
     { title: '名称', dataIndex: 'name' },
     { title: 'API 地址', dataIndex: 'base_url', ellipsis: true },
     { title: 'API Key', dataIndex: 'api_key_hint', width: 120 },
+    {
+      title: '协议',
+      dataIndex: 'protocol',
+      width: 110,
+      render: (v: string) => (
+        <Tag color={v === 'anthropic' ? 'purple' : 'blue'}>
+          {v === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容'}
+        </Tag>
+      ),
+    },
+    {
+      title: '能力档位',
+      dataIndex: 'capability_tier',
+      width: 110,
+      render: (v: string) => <Tag color={TIER_TAG_COLORS[v] || 'default'}>{v || 'balanced'}</Tag>,
+    },
+    {
+      title: '默认模型',
+      dataIndex: 'preferred_model',
+      ellipsis: true,
+      render: (v: string | null) => v || <span style={{ color: '#bbb' }}>未设置</span>,
+    },
     {
       title: '状态',
       dataIndex: 'is_active',
@@ -172,6 +235,43 @@ export default function LlmProviders() {
             rules={editingId ? [] : [{ required: true, message: '请输入 API Key' }]}
           >
             <Input.Password placeholder={editingId ? '留空则不修改' : '请输入 API Key'} />
+          </Form.Item>
+          <Form.Item
+            name="protocol"
+            label="协议类型"
+            tooltip="决定请求发给端点 /v1/chat/completions（OpenAI）还是 /v1/messages（Anthropic）"
+            rules={[{ required: true, message: '请选择协议类型' }]}
+          >
+            <Select
+              options={[
+                { value: 'openai', label: 'OpenAI 兼容（/v1/chat/completions）' },
+                { value: 'anthropic', label: 'Anthropic Messages（/v1/messages）' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item
+            name="capability_tier"
+            label="能力档位"
+            tooltip="影响「新建任务 → auto」模式的模型分配：简单任务挑 fast，复杂任务挑 strong/frontier"
+            rules={[{ required: true, message: '请选择能力档位' }]}
+          >
+            <Select options={TIER_OPTIONS} />
+          </Form.Item>
+          <Form.Item
+            name="preferred_model"
+            label="默认模型"
+            tooltip="auto 模式下选中该供应商时使用的模型名；留空则 auto 会报错提示此供应商未配置默认模型"
+          >
+            {modelOptions.length > 0 ? (
+              <Select
+                showSearch
+                allowClear
+                placeholder="从 /v1/models 列表选或手动输入"
+                options={modelOptions.map((m) => ({ value: m, label: m }))}
+              />
+            ) : (
+              <Input allowClear placeholder="如 gpt-4o、deepseek-chat、claude-sonnet-4-5" />
+            )}
           </Form.Item>
           <Form.Item name="is_active" label="启用" valuePropName="checked">
             <Switch />

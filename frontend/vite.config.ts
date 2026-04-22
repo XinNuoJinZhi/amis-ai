@@ -15,6 +15,7 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,
+        ws: true, // 必须开启：项目详情页的 /api/projects/tasks/:id/events 是 WebSocket
       },
       '/agent': {
         target: 'http://localhost:8000',

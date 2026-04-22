@@ -1,0 +1,447 @@
+//! 任务级 LLM 选择器：对外统一入口 `select_for_task`，按 mode 分三路
+//!   - manual : 用户显式指定 provider + model，仅做校验
+//!   - auto   : 按复杂度 + 历史成功率自动分档
+//!   - default: 沿用老 model_configs 中 code_generation / generation 的活跃配置（向后兼容）
+//!
+//! 另外暴露 `preview_auto` 给前端「新建任务」页面预览 auto 将选中的 provider/model，
+//! 以及 `score_amis_complexity` 给单元测试直接验证评分逻辑。
+
+use std::collections::HashMap;
+
+use chrono::Duration;
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter,
+    Statement,
+};
+use serde_json::Value;
+
+use crate::entity::{llm_provider, model_config};
+use crate::services::claw_agent_client::LlmConfig;
+use crate::AppState;
+
+/// 选择结果（决策出的 provider / model 和审计字段）
+#[derive(Debug, Clone)]
+pub struct LlmDecision {
+    pub mode: String,
+    pub provider_id: i32,
+    pub provider_name: String,
+    pub config: LlmConfig,
+    pub capability_tier: Option<String>,
+    pub complexity_score: Option<f32>,
+    pub reason: String,
+}
+
+/// 本模块对外的主入口：根据 mode 选出 provider + model。
+pub async fn select_for_task(
+    state: &AppState,
+    user_id: i32,
+    amis_json: &str,
+    payload_mode: Option<&str>,
+    manual_provider_id: Option<i32>,
+    manual_model: Option<&str>,
+) -> Result<LlmDecision, String> {
+    let mode = payload_mode.unwrap_or("default");
+    match mode {
+        "manual" => select_manual(state, manual_provider_id, manual_model).await,
+        "auto" => decide_auto(state, user_id, amis_json).await,
+        _ => select_default(state).await,
+    }
+}
+
+/// 「新建任务」页面的预览：不落库，纯粹跑一次 auto 决策返回结果
+pub async fn preview_auto(
+    state: &AppState,
+    user_id: i32,
+    amis_json: &str,
+) -> Result<LlmDecision, String> {
+    decide_auto(state, user_id, amis_json).await
+}
+
+// ============================================================
+//  manual / default 分支
+// ============================================================
+
+async fn select_manual(
+    state: &AppState,
+    provider_id: Option<i32>,
+    model_name: Option<&str>,
+) -> Result<LlmDecision, String> {
+    let provider_id = provider_id.ok_or_else(|| "manual 模式必须指定 provider_id".to_string())?;
+    let model = model_name
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "manual 模式必须指定 model_name".to_string())?;
+
+    let provider = llm_provider::Entity::find_by_id(provider_id)
+        .one(&state.db)
+        .await
+        .map_err(|e| format!("查询供应商失败: {}", e))?
+        .ok_or_else(|| format!("供应商 {} 不存在", provider_id))?;
+
+    if !provider.is_active {
+        return Err(format!("供应商「{}」未启用", provider.name));
+    }
+
+    Ok(LlmDecision {
+        mode: "manual".to_string(),
+        provider_id: provider.id,
+        provider_name: provider.name.clone(),
+        config: LlmConfig {
+            base_url: Some(provider.base_url.clone()),
+            api_key: Some(provider.api_key.clone()),
+            model: model.to_string(),
+            protocol: provider.protocol.clone(),
+        },
+        capability_tier: Some(provider.capability_tier.clone()),
+        complexity_score: None,
+        reason: format!("manual: {}/{}", provider.name, model),
+    })
+}
+
+/// 旧 model_configs 逻辑：先 code_generation，fallback 到 generation
+async fn select_default(state: &AppState) -> Result<LlmDecision, String> {
+    for task_type in ["code_generation", "generation"] {
+        if let Some(decision) = fetch_default_for_task_type(state, task_type).await {
+            return Ok(decision);
+        }
+    }
+    Err("无可用的系统默认 LLM 配置，请先在「系统设置 → 供应商管理」激活一个供应商".to_string())
+}
+
+async fn fetch_default_for_task_type(state: &AppState, task_type: &str) -> Option<LlmDecision> {
+    let config = model_config::Entity::find()
+        .filter(model_config::Column::TaskType.eq(task_type))
+        .filter(model_config::Column::IsActive.eq(true))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()?;
+
+    let provider = llm_provider::Entity::find_by_id(config.provider_id)
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()?;
+
+    if !provider.is_active {
+        return None;
+    }
+
+    Some(LlmDecision {
+        mode: "default".to_string(),
+        provider_id: provider.id,
+        provider_name: provider.name.clone(),
+        config: LlmConfig {
+            base_url: Some(provider.base_url.clone()),
+            api_key: Some(provider.api_key.clone()),
+            model: config.model_name.clone(),
+            protocol: provider.protocol.clone(),
+        },
+        capability_tier: Some(provider.capability_tier.clone()),
+        complexity_score: None,
+        reason: format!("default(task_type={}): {}/{}", task_type, provider.name, config.model_name),
+    })
+}
+
+// ============================================================
+//  auto 决策
+// ============================================================
+
+async fn decide_auto(
+    state: &AppState,
+    user_id: i32,
+    amis_json: &str,
+) -> Result<LlmDecision, String> {
+    let score = score_amis_complexity(amis_json);
+    let target_tier = tier_from_score(score);
+
+    let providers: Vec<llm_provider::Model> = llm_provider::Entity::find()
+        .filter(llm_provider::Column::IsActive.eq(true))
+        .all(&state.db)
+        .await
+        .map_err(|e| format!("查询供应商失败: {}", e))?;
+
+    if providers.is_empty() {
+        return Err("没有启用的 LLM 供应商，auto 模式无法决策，请先在「系统设置」里启用供应商".to_string());
+    }
+
+    let history = fetch_history_success_rates(&state.db, user_id).await.unwrap_or_default();
+
+    // 候选：先取 target_tier 完全匹配的，若空则扩到 ±1 档
+    let mut candidates: Vec<&llm_provider::Model> = providers
+        .iter()
+        .filter(|p| p.capability_tier == target_tier)
+        .collect();
+
+    if candidates.is_empty() {
+        candidates = providers
+            .iter()
+            .filter(|p| tier_distance(&p.capability_tier, target_tier) <= 1)
+            .collect();
+    }
+
+    if candidates.is_empty() {
+        // 还是没有 → 直接取成功率最高的已启用供应商
+        candidates = providers.iter().collect();
+    }
+
+    // 排序：历史成功率（未知给中性 0.6）减去与目标档位的距离惩罚
+    candidates.sort_by(|a, b| {
+        let sa = score_candidate(a, target_tier, &history);
+        let sb = score_candidate(b, target_tier, &history);
+        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let best = candidates.first().copied().ok_or_else(|| "候选供应商为空".to_string())?;
+
+    let model_name = best.preferred_model.clone().ok_or_else(|| {
+        format!(
+            "供应商「{}」未配置 preferred_model；请到「供应商管理」填写默认模型",
+            best.name
+        )
+    })?;
+
+    let success_rate = history.get(&best.id).copied();
+    let reason = format!(
+        "auto: complexity={:.1}, target_tier={}, picked={}({}), history_sr={}",
+        score,
+        target_tier,
+        best.name,
+        best.capability_tier,
+        success_rate.map(|r| format!("{:.2}", r)).unwrap_or_else(|| "无历史".to_string()),
+    );
+
+    Ok(LlmDecision {
+        mode: "auto".to_string(),
+        provider_id: best.id,
+        provider_name: best.name.clone(),
+        config: LlmConfig {
+            base_url: Some(best.base_url.clone()),
+            api_key: Some(best.api_key.clone()),
+            model: model_name,
+            protocol: best.protocol.clone(),
+        },
+        capability_tier: Some(best.capability_tier.clone()),
+        complexity_score: Some(score),
+        reason,
+    })
+}
+
+fn score_candidate(
+    p: &llm_provider::Model,
+    target_tier: &str,
+    history: &HashMap<i32, f32>,
+) -> f32 {
+    let sr = history.get(&p.id).copied().unwrap_or(0.6);
+    let penalty = tier_distance(&p.capability_tier, target_tier) as f32 * 0.15;
+    sr - penalty
+}
+
+/// 档位距离：同档 0，相邻 1，跨两档 2 ...
+fn tier_distance(a: &str, b: &str) -> i32 {
+    let rank = |s: &str| -> i32 {
+        match s {
+            "fast" => 0,
+            "balanced" => 1,
+            "strong" => 2,
+            "frontier" => 3,
+            _ => 1,
+        }
+    };
+    (rank(a) - rank(b)).abs()
+}
+
+/// 最近 30 天、status='succeeded'、llm_provider_id 非空的任务按 provider 聚合成功率；样本 <3 忽略
+async fn fetch_history_success_rates(
+    db: &DatabaseConnection,
+    user_id: i32,
+) -> Result<HashMap<i32, f32>, sea_orm::DbErr> {
+    let since = chrono::Local::now().naive_local() - Duration::days(30);
+
+    // 直接 SQL 聚合：同一用户、30 天内、有 llm_provider_id 的任务
+    let stmt = Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        r#"
+        SELECT llm_provider_id AS provider_id,
+               SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END)::float / COUNT(*)::float AS success_rate,
+               COUNT(*) AS total
+        FROM project_generation_task
+        WHERE user_id = $1
+          AND created_at >= $2
+          AND llm_provider_id IS NOT NULL
+        GROUP BY llm_provider_id
+        HAVING COUNT(*) >= 3
+        "#,
+        [user_id.into(), since.into()],
+    );
+
+    let rows = db.query_all(stmt).await?;
+    let mut map = HashMap::new();
+    for row in rows {
+        let provider_id: i32 = row.try_get::<i32>("", "provider_id")?;
+        let success_rate: f64 = row.try_get::<f64>("", "success_rate")?;
+        map.insert(provider_id, success_rate as f32);
+    }
+    Ok(map)
+}
+
+// ============================================================
+//  复杂度评分
+// ============================================================
+
+/// 由 amis_json 评估任务复杂度。解析失败时给一个保守中等分。
+pub fn score_amis_complexity(amis_json: &str) -> f32 {
+    let value: Value = match serde_json::from_str(amis_json) {
+        Ok(v) => v,
+        Err(_) => return 25.0,
+    };
+
+    let mut ctx = ComplexityCtx::default();
+    walk(&value, 0, &mut ctx);
+
+    (ctx.page as f32) * 5.0
+        + (ctx.widget as f32) * 0.3
+        + (ctx.max_depth as f32) * 2.0
+        + (ctx.form as f32) * 1.5
+        + (ctx.table as f32) * 2.5
+        + (ctx.api as f32) * 1.0
+}
+
+#[derive(Default)]
+struct ComplexityCtx {
+    page: u32,
+    widget: u32,
+    max_depth: u32,
+    form: u32,
+    table: u32,
+    api: u32,
+}
+
+fn walk(v: &Value, depth: u32, ctx: &mut ComplexityCtx) {
+    if depth > ctx.max_depth {
+        ctx.max_depth = depth;
+    }
+    match v {
+        Value::Object(map) => {
+            if let Some(Value::String(t)) = map.get("type") {
+                ctx.widget += 1;
+                if matches!(t.as_str(), "page" | "wizard" | "tab") {
+                    ctx.page += 1;
+                }
+                if t == "form" || t.starts_with("input-") || t == "select" || t == "picker" {
+                    ctx.form += 1;
+                }
+                if matches!(t.as_str(), "table" | "crud" | "list") {
+                    ctx.table += 1;
+                }
+            }
+            for (k, child) in map {
+                if matches!(k.as_str(), "api" | "initApi" | "saveApi") {
+                    ctx.api += 1;
+                }
+                walk(child, depth + 1, ctx);
+            }
+        }
+        Value::Array(arr) => {
+            for child in arr {
+                walk(child, depth + 1, ctx);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn tier_from_score(score: f32) -> &'static str {
+    if score < 20.0 {
+        "fast"
+    } else if score < 50.0 {
+        "balanced"
+    } else if score < 100.0 {
+        "strong"
+    } else {
+        "frontier"
+    }
+}
+
+// ============================================================
+//  单元测试
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tier_thresholds() {
+        assert_eq!(tier_from_score(0.0), "fast");
+        assert_eq!(tier_from_score(19.9), "fast");
+        assert_eq!(tier_from_score(20.0), "balanced");
+        assert_eq!(tier_from_score(49.9), "balanced");
+        assert_eq!(tier_from_score(50.0), "strong");
+        assert_eq!(tier_from_score(99.9), "strong");
+        assert_eq!(tier_from_score(100.0), "frontier");
+    }
+
+    #[test]
+    fn tier_distance_matrix() {
+        assert_eq!(tier_distance("fast", "fast"), 0);
+        assert_eq!(tier_distance("fast", "balanced"), 1);
+        assert_eq!(tier_distance("balanced", "strong"), 1);
+        assert_eq!(tier_distance("fast", "frontier"), 3);
+    }
+
+    #[test]
+    fn simple_form_is_fast() {
+        let json = r#"{
+            "type": "page",
+            "body": {
+                "type": "form",
+                "api": "/api/save",
+                "body": [
+                    {"type": "input-text", "name": "a"},
+                    {"type": "input-text", "name": "b"}
+                ]
+            }
+        }"#;
+        let score = score_amis_complexity(json);
+        let tier = tier_from_score(score);
+        assert_eq!(tier, "fast", "expected fast, got score={} tier={}", score, tier);
+    }
+
+    #[test]
+    fn medium_crud_is_balanced_or_strong() {
+        let json = r#"{
+            "type": "page",
+            "body": {
+                "type": "crud",
+                "api": "/api/list",
+                "initApi": "/api/init",
+                "saveApi": "/api/save",
+                "columns": [
+                    {"type": "text", "name": "a"},
+                    {"type": "text", "name": "b"},
+                    {"type": "text", "name": "c"}
+                ],
+                "headerToolbar": [
+                    {"type": "form", "body": [
+                        {"type": "input-text", "name": "keyword"},
+                        {"type": "select", "name": "status"}
+                    ]}
+                ]
+            }
+        }"#;
+        let score = score_amis_complexity(json);
+        let tier = tier_from_score(score);
+        assert!(
+            matches!(tier, "balanced" | "strong"),
+            "expected balanced/strong, got score={} tier={}",
+            score, tier,
+        );
+    }
+
+    #[test]
+    fn malformed_json_returns_default() {
+        let score = score_amis_complexity("{not json");
+        assert_eq!(score, 25.0);
+    }
+}
+

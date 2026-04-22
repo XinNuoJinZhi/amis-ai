@@ -24,6 +24,10 @@ pub struct DockerClient {
     inner: Docker,
     image: String,
     pnpm_store: String,
+    /// 容器/exec 身份 UID（与宿主机的 uid 对齐，避免 root-owned 目录阻塞 std::fs::write）
+    host_uid: u32,
+    /// 容器/exec 身份 GID
+    host_gid: u32,
 }
 
 pub struct CreateOpts<'a> {
@@ -35,10 +39,20 @@ pub struct CreateOpts<'a> {
 impl DockerClient {
     pub fn connect(image: impl Into<String>, pnpm_store: impl Into<String>) -> Result<Self, DockerError> {
         let inner = Docker::connect_with_local_defaults()?;
+        let host_uid = std::env::var("SANDBOX_CONTAINER_UID")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(1000);
+        let host_gid = std::env::var("SANDBOX_CONTAINER_GID")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(1000);
         Ok(Self {
             inner,
             image: image.into(),
             pnpm_store: pnpm_store.into(),
+            host_uid,
+            host_gid,
         })
     }
 
@@ -91,6 +105,15 @@ impl DockerClient {
             working_dir: Some("/workspace".to_string()),
             host_config: Some(host_config),
             exposed_ports: Some(exposed),
+            // 以宿主机 UID:GID 启动容器，避免容器创建的文件在宿主机是 root-owned 而 karl 写不进去
+            user: Some(format!("{}:{}", self.host_uid, self.host_gid)),
+            env: Some(vec![
+                // 镜像里 pnpm 全局 bin 装在 /root/.local/share/pnpm，默认 755，非 root 能读能执行但不能写
+                // 把 HOME 指到可写区，让 pnpm 的状态文件（.pnpm/locks、store-v3 等）不再试图写 /root
+                "HOME=/tmp".to_string(),
+                "PNPM_HOME=/tmp/.pnpm".to_string(),
+                "PATH=/root/.local/share/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+            ]),
             ..Default::default()
         };
 
@@ -144,6 +167,9 @@ impl DockerClient {
                     attach_stdout: Some(true),
                     attach_stderr: Some(true),
                     working_dir: cwd,
+                    // 显式传 user：避免 bash mkdir/touch 创建 root-owned 目录，
+                    // 与容器启动身份保持一致
+                    user: Some(format!("{}:{}", self.host_uid, self.host_gid)),
                     ..Default::default()
                 },
             )

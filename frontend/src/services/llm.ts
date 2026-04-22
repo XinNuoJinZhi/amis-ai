@@ -3,7 +3,7 @@ import type { LlmProvider, ModelConfig } from '../types';
 
 // ---- 供应商管理 ----
 
-interface ProviderResponse extends Omit<LlmProvider, 'api_key'> {
+export interface ProviderResponse extends LlmProvider {
   api_key_hint: string;
 }
 
@@ -17,6 +17,9 @@ export async function createProvider(payload: {
   base_url: string;
   api_key: string;
   is_active?: boolean;
+  protocol?: string;
+  capability_tier?: string;
+  preferred_model?: string | null;
 }): Promise<ProviderResponse> {
   const { data } = await api.post('/llm/providers', payload);
   return data;
@@ -27,6 +30,9 @@ export async function updateProvider(id: number, payload: {
   base_url?: string;
   api_key?: string;
   is_active?: boolean;
+  protocol?: string;
+  capability_tier?: string;
+  preferred_model?: string | null;
 }): Promise<ProviderResponse> {
   const { data } = await api.put(`/llm/providers/${id}`, payload);
   return data;

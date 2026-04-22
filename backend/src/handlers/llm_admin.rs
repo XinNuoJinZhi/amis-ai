@@ -17,12 +17,21 @@ use crate::entity::{llm_provider, model_config};
 //  供应商 (Provider) CRUD
 // ========================
 
+/// 合法的供应商协议类型
+const VALID_PROTOCOLS: [&str; 2] = ["openai", "anthropic"];
+
+/// 合法的能力分档
+pub const VALID_CAPABILITY_TIERS: [&str; 4] = ["fast", "balanced", "strong", "frontier"];
+
 #[derive(Deserialize)]
 pub struct CreateProviderRequest {
     pub name: String,
     pub base_url: String,
     pub api_key: String,
     pub is_active: Option<bool>,
+    pub protocol: Option<String>,
+    pub capability_tier: Option<String>,
+    pub preferred_model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -31,6 +40,18 @@ pub struct UpdateProviderRequest {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub is_active: Option<bool>,
+    pub protocol: Option<String>,
+    pub capability_tier: Option<String>,
+    // 用嵌套 Option 区分「不传（None）」与「显式清空（Some(None)）」
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub preferred_model: Option<Option<String>>,
+}
+
+fn deserialize_double_option<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(|v| Some(v.filter(|s| !s.is_empty())))
 }
 
 #[derive(Serialize)]
@@ -41,6 +62,9 @@ pub struct ProviderResponse {
     pub api_key_hint: String,
     pub is_active: bool,
     pub created_at: chrono::NaiveDateTime,
+    pub protocol: String,
+    pub capability_tier: String,
+    pub preferred_model: Option<String>,
 }
 
 impl From<llm_provider::Model> for ProviderResponse {
@@ -57,6 +81,9 @@ impl From<llm_provider::Model> for ProviderResponse {
             api_key_hint: hint,
             is_active: p.is_active,
             created_at: p.created_at,
+            protocol: p.protocol,
+            capability_tier: p.capability_tier,
+            preferred_model: p.preferred_model,
         }
     }
 }
@@ -79,12 +106,29 @@ pub async fn create_provider(
     State(state): State<crate::AppState>,
     Json(payload): Json<CreateProviderRequest>,
 ) -> impl IntoResponse {
+    let protocol = payload.protocol.unwrap_or_else(|| "openai".to_string());
+    if !VALID_PROTOCOLS.contains(&protocol.as_str()) {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": format!("无效的协议类型，可选: {:?}", VALID_PROTOCOLS)
+        }))).into_response();
+    }
+
+    let capability_tier = payload.capability_tier.unwrap_or_else(|| "balanced".to_string());
+    if !VALID_CAPABILITY_TIERS.contains(&capability_tier.as_str()) {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": format!("无效的能力分档，可选: {:?}", VALID_CAPABILITY_TIERS)
+        }))).into_response();
+    }
+
     let new_provider = llm_provider::ActiveModel {
         name: Set(payload.name),
         base_url: Set(payload.base_url),
         api_key: Set(payload.api_key),
         is_active: Set(payload.is_active.unwrap_or(true)),
         created_at: Set(chrono::Local::now().naive_local()),
+        protocol: Set(protocol),
+        capability_tier: Set(capability_tier),
+        preferred_model: Set(payload.preferred_model.filter(|s| !s.is_empty())),
         ..Default::default()
     };
 
@@ -107,6 +151,22 @@ pub async fn update_provider(
 
     match provider {
         Ok(Some(model)) => {
+            if let Some(ref p) = payload.protocol {
+                if !VALID_PROTOCOLS.contains(&p.as_str()) {
+                    return (StatusCode::BAD_REQUEST, Json(json!({
+                        "error": format!("无效的协议类型，可选: {:?}", VALID_PROTOCOLS)
+                    }))).into_response();
+                }
+            }
+
+            if let Some(ref t) = payload.capability_tier {
+                if !VALID_CAPABILITY_TIERS.contains(&t.as_str()) {
+                    return (StatusCode::BAD_REQUEST, Json(json!({
+                        "error": format!("无效的能力分档，可选: {:?}", VALID_CAPABILITY_TIERS)
+                    }))).into_response();
+                }
+            }
+
             let mut active: llm_provider::ActiveModel = model.into_active_model();
 
             if let Some(name) = payload.name {
@@ -120,6 +180,15 @@ pub async fn update_provider(
             }
             if let Some(is_active) = payload.is_active {
                 active.is_active = Set(is_active);
+            }
+            if let Some(protocol) = payload.protocol {
+                active.protocol = Set(protocol);
+            }
+            if let Some(tier) = payload.capability_tier {
+                active.capability_tier = Set(tier);
+            }
+            if let Some(pref) = payload.preferred_model {
+                active.preferred_model = Set(pref);
             }
 
             match active.update(&state.db).await {
@@ -262,7 +331,7 @@ pub async fn list_provider_models(
 //  模型配置 (ModelConfig) CRUD
 // ============================
 
-const VALID_TASK_TYPES: [&str; 3] = ["generation", "embedding", "chat"];
+const VALID_TASK_TYPES: [&str; 4] = ["generation", "embedding", "chat", "code_generation"];
 
 #[derive(Deserialize)]
 pub struct CreateModelConfigRequest {
@@ -486,6 +555,7 @@ pub async fn resolve_llm_config(
                         "model": config.model_name,
                         "temperature": config.temperature,
                         "max_tokens": config.max_tokens,
+                        "protocol": provider.protocol,
                     })).into_response()
                 }
                 Ok(Some(_)) => {

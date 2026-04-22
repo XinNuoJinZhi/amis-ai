@@ -135,7 +135,8 @@ pub async fn exec_command(
     }
 }
 
-use crate::dev_runner::{classify, LogSignal};
+use crate::dev_runner::{classify, classify_runtime_error, LogSignal};
+use std::hash::{Hash, Hasher};
 
 pub async fn dev_start(
     State(state): State<SharedState>,
@@ -165,14 +166,27 @@ pub async fn dev_start(
     let state_bg = state.clone();
     let sandbox_id = id.clone();
     tokio::spawn(async move {
-        let install_res = state_bg
-            .docker
-            .exec(
-                &container_id,
-                vec!["sh".into(), "-c".into(), "cd /workspace && pnpm install --prefer-offline 2>&1".into()],
-                None,
-            )
-            .await;
+        // pnpm install 硬超时 180s（3 分钟），超时则 Failed 上报
+        let install_timeout = std::time::Duration::from_secs(180);
+        let install_fut = state_bg.docker.exec(
+            &container_id,
+            vec!["sh".into(), "-c".into(), "cd /workspace && pnpm install --prefer-offline 2>&1".into()],
+            None,
+        );
+        let install_res = match tokio::time::timeout(install_timeout, install_fut).await {
+            Ok(r) => r,
+            Err(_) => {
+                // 超时：标记失败并退出
+                let mut map = state_bg.sandboxes.write().await;
+                if let Some(sb) = map.get_mut(&sandbox_id) {
+                    sb.dev_status = DevStatus::Failed {
+                        reason: "pnpm install 超时 (>180s)。请检查网络、代理或预装 node_modules 到镜像里".to_string(),
+                    };
+                    sb.push_log("[sandbox] pnpm install timeout after 180s".to_string());
+                }
+                return;
+            }
+        };
         match install_res {
             Ok(r) if r.exit_code == 0 => {
                 let state_probe = state_bg.clone();
@@ -187,41 +201,102 @@ pub async fn dev_start(
                             vec![
                                 "sh".into(),
                                 "-c".into(),
-                                "cd /workspace && nohup sh -c 'pnpm run dev:h5 --host 0.0.0.0 --port 5173 > /tmp/vite.log 2>&1' &".into(),
+                                // 注意：不再传 --host/--port，因为种子项目的 package.json script 和 vite.config.ts 已经写死（避免 uni CLI 参数重复 parse 成数组报错）
+                                "cd /workspace && nohup sh -c 'pnpm run dev:h5 > /tmp/vite.log 2>&1' &".into(),
                             ],
                             None,
                         )
                         .await;
 
-                    // 轮询 /tmp/vite.log
-                    for _ in 0..120 {
+                    // 持续长驻轮询 /tmp/vite.log：
+                    //   - 启动阶段：识别 Ready / Failed（沿用 classify）
+                    //   - Ready 之后：持续扫描运行时错误（classify_runtime_error），命中即切 RuntimeError
+                    //   - 沙箱被删除 / 超过 2 小时上限 → 退出任务
+                    //   - 去重：同一行文本（hash）只处理一次
+                    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+                    let mut is_ready = false;
+                    let mut startup_wait = 0u32;
+                    // 2 小时 = 7200 秒，按 1 秒一次轮询
+                    for _ in 0..7200u32 {
                         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+                        // 沙箱已被 delete 则退出
+                        let still_exists = state_probe.sandboxes.read().await.contains_key(&sid);
+                        if !still_exists {
+                            break;
+                        }
+
                         let tail = state_probe
                             .docker
                             .exec(
                                 &cid,
-                                vec!["sh".into(), "-c".into(), "tail -n 50 /tmp/vite.log 2>/dev/null || true".into()],
+                                vec![
+                                    "sh".into(),
+                                    "-c".into(),
+                                    "tail -n 200 /tmp/vite.log 2>/dev/null || true".into(),
+                                ],
                                 None,
                             )
                             .await;
-                        if let Ok(r) = tail {
-                            let mut map = state_probe.sandboxes.write().await;
-                            if let Some(sb) = map.get_mut(&sid) {
-                                for line in r.stdout.lines() {
-                                    sb.push_log(line.to_string());
-                                    match classify(line) {
-                                        LogSignal::Ready(_url) => {
-                                            sb.dev_status = DevStatus::Ready {
-                                                url: format!("http://localhost:{}/", sb.preview_port),
-                                            };
-                                        }
-                                        LogSignal::Failed(reason) => {
-                                            sb.dev_status = DevStatus::Failed { reason };
-                                        }
-                                        LogSignal::Neutral => {}
+                        let Ok(r) = tail else { continue; };
+
+                        let mut map = state_probe.sandboxes.write().await;
+                        let Some(sb) = map.get_mut(&sid) else { break; };
+
+                        for line in r.stdout.lines() {
+                            let trimmed = line.trim();
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+                            // 行文本 hash 去重
+                            let mut h = std::collections::hash_map::DefaultHasher::new();
+                            trimmed.hash(&mut h);
+                            if !seen.insert(h.finish()) {
+                                continue;
+                            }
+
+                            sb.push_log(line.to_string());
+
+                            if !is_ready {
+                                // 启动阶段：用 classify 判定 Ready / Failed
+                                match classify(line) {
+                                    LogSignal::Ready(_url) => {
+                                        is_ready = true;
+                                        sb.dev_status = DevStatus::Ready {
+                                            url: format!("http://localhost:{}/", sb.preview_port),
+                                        };
                                     }
+                                    LogSignal::Failed(reason) => {
+                                        sb.dev_status = DevStatus::Failed { reason };
+                                    }
+                                    LogSignal::Neutral => {}
                                 }
-                                if matches!(sb.dev_status, DevStatus::Ready { .. } | DevStatus::Failed { .. }) {
+                            } else {
+                                // Ready 之后：只扫运行时错误，避免 classify 里的 RE_ERROR 再误判为启动 Failed
+                                if let Some(reason) = classify_runtime_error(line) {
+                                    let recent_logs: Vec<String> = sb
+                                        .recent_logs
+                                        .iter()
+                                        .rev()
+                                        .take(30)
+                                        .cloned()
+                                        .collect::<Vec<_>>()
+                                        .into_iter()
+                                        .rev()
+                                        .collect();
+                                    sb.dev_status = DevStatus::RuntimeError {
+                                        reason,
+                                        logs: recent_logs,
+                                    };
+                                }
+                            }
+                        }
+                        // 启动阶段 Failed（非 Ready 就 Failed）后给 3 秒缓冲让调用方看到日志，然后退出循环
+                        // （避免 Ready 之前的 Failed 态还继续扫 runtime 错误造成混淆）
+                        if !is_ready {
+                            if matches!(sb.dev_status, DevStatus::Failed { .. }) {
+                                startup_wait += 1;
+                                if startup_wait >= 3 {
                                     break;
                                 }
                             }
@@ -232,9 +307,19 @@ pub async fn dev_start(
             Ok(r) => {
                 let mut map = state_bg.sandboxes.write().await;
                 if let Some(sb) = map.get_mut(&sandbox_id) {
+                    // stderr 可能为空（pnpm 习惯把 warning 写 stdout），合并 stdout 兜底
+                    let combined = if r.stderr.is_empty() { r.stdout.clone() } else { r.stderr.clone() };
                     sb.dev_status = DevStatus::Failed {
-                        reason: format!("pnpm install 失败 (exit={}): {}", r.exit_code, r.stderr.chars().take(500).collect::<String>()),
+                        reason: format!(
+                            "pnpm install 失败 (exit={}): {}",
+                            r.exit_code,
+                            combined.chars().take(2000).collect::<String>()
+                        ),
                     };
+                    // 把 install 的完整输出也 push 到 recent_logs，前端能看到
+                    for line in combined.lines().rev().take(50).collect::<Vec<_>>().into_iter().rev() {
+                        sb.push_log(line.to_string());
+                    }
                 }
             }
             Err(e) => {

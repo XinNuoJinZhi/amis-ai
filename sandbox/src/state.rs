@@ -12,6 +12,12 @@ pub enum DevStatus {
     Starting,
     Ready { url: String },
     Failed { reason: String },
+    /// Vite 已经 Ready 之后，持续 tail 日志检测到的运行时错误（import-analysis、HMR、模块解析等）。
+    /// 与 Failed 的区别：Ready 之后才降级，前端和 backend watcher 可以据此触发「已采纳任务重新进入修复」的流程。
+    RuntimeError {
+        reason: String,
+        logs: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]

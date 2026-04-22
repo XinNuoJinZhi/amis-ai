@@ -8,6 +8,8 @@ mod port_pool;
 mod state;
 mod handlers;
 mod dev_runner;
+mod fs_handlers;
+mod terminal_handlers;
 
 use state::{AppState, SharedState};
 
@@ -55,6 +57,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/sandboxes/:id/exec", axum::routing::post(handlers::exec_command))
         .route("/sandboxes/:id/dev-start", axum::routing::post(handlers::dev_start))
         .route("/sandboxes/:id/dev-status", axum::routing::get(handlers::dev_status))
+        // 文件系统接口（直读宿主 workdir）
+        .route("/sandboxes/:id/fs/tree", axum::routing::get(fs_handlers::fs_tree))
+        .route("/sandboxes/:id/fs/file", axum::routing::get(fs_handlers::fs_read))
+        .route("/sandboxes/:id/fs/file", axum::routing::put(fs_handlers::fs_write))
+        .route("/sandboxes/:id/fs/file", axum::routing::delete(fs_handlers::fs_delete))
+        .route("/sandboxes/:id/fs/mkdir", axum::routing::post(fs_handlers::fs_mkdir))
+        // 终端 WebSocket（bollard exec TTY 转接）
+        .route("/sandboxes/:id/terminal", axum::routing::get(terminal_handlers::terminal_ws))
         .with_state(state);
 
     let addr: SocketAddr = "0.0.0.0:8091".parse()?;

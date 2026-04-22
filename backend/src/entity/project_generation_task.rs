@@ -28,6 +28,13 @@ pub struct Model {
     pub adopted_at: Option<DateTime>,
     pub created_at: DateTime,
     pub updated_at: DateTime,
+    /// LLM 选择模式：manual / auto / default
+    pub llm_mode: String,
+    /// 本次任务最终使用的 provider id（manual 手动选 / auto 决策后写入）
+    pub llm_provider_id: Option<i32>,
+    /// 本次任务最终使用的模型名
+    #[sea_orm(column_type = "Text", nullable)]
+    pub llm_model_name: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
