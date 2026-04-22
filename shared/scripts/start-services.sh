@@ -20,9 +20,11 @@ mkdir -p "$LOG_DIR"
 SANDBOX_BIN="$AMIS_ROOT/sandbox/target/debug/sandbox-service"
 CLAW_BIN="$AMIS_ROOT/claw-code/rust/target/debug/claw-agent-server"
 BACKEND_BIN="$AMIS_ROOT/backend/target/debug/amis-ai-backend"
+AGENT_DIR="$AMIS_ROOT/agent"
+AGENT_PORT="${AGENT_PORT:-8000}"
 
 start_one() {
-  local name="$1" bin="$2" port="$3" extra_env="$4"
+  local name="$1" bin="$2" port="$3" extra_env="$4" cwd="${5:-$AMIS_ROOT}"
   if nc -z localhost "$port" 2>/dev/null; then
     echo "⚠️  $name 端口 :$port 已被占用，跳过"
     return
@@ -32,28 +34,82 @@ start_one() {
     echo "   请先 cargo build"
     return 1
   fi
-  # 关键：用 env -u 局部 unset 代理变量（仅影响这个子进程，不改当前 shell）
-  nohup env -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY -u all_proxy -u ALL_PROXY \
+  # 用 --chdir 切换 cwd 到服务目录，让 dotenvy 能读到该服务下的 .env 文件
+  # 关于代理：保留当前 shell 的 HTTP_PROXY/HTTPS_PROXY 等，让服务继承。
+  # 内网地址（192.168.*）由 Clash 的 IP-CIDR DIRECT 规则直接出去，
+  # localhost 由 no_proxy 环境变量保证不走代理。
+  nohup env --chdir="$cwd" \
     RUST_LOG=info $extra_env "$bin" \
     > "$LOG_DIR/$name.log" 2>&1 &
   local pid=$!
-  echo "✅ $name 启动 (PID $pid, log $LOG_DIR/$name.log)"
+  echo "✅ $name 启动 (PID $pid, log $LOG_DIR/$name.log, cwd $cwd)"
   sleep 1
 }
 
 start_all() {
   echo "=== 启动 sandbox-service (:8091) ==="
-  start_one sandbox-service "$SANDBOX_BIN" 8091 ""
+  # 传 UID/GID 给 sandbox-service，让它以宿主机用户身份拉起容器和 exec，
+  # 避免容器 root 创建的文件在宿主机是 root-owned → claw-agent-server (karl) 写不进去
+  local host_uid
+  host_uid="$(id -u)"
+  local host_gid
+  host_gid="$(id -g)"
+  start_one sandbox-service "$SANDBOX_BIN" 8091 \
+    "SANDBOX_CONTAINER_UID=$host_uid SANDBOX_CONTAINER_GID=$host_gid" \
+    "$AMIS_ROOT/sandbox"
 
   echo "=== 启动 claw-agent-server (:8090) ==="
-  start_one claw-agent-server "$CLAW_BIN" 8090 ""
+  # A.5：显式注入 Skills 发现配置
+  # - CLAW_CONFIG_HOME：让 amis-ai/skills/* 被 claw-code 的 discover_skill_roots 自动扫到
+  # - SKILLS_PLUGIN_PATHS：逗号分隔的外部插件包根目录（C 阶段会让 ZC Amis 团队提供）
+  #   形如 "SKILLS_PLUGIN_PATHS=/opt/zc-amis-skills,/opt/another-team-skills"
+  #   每个路径下应该放一个或多个标准 skill 包（含 SKILL.md）
+  local plugin_paths="${SKILLS_PLUGIN_PATHS:-}"
+  start_one claw-agent-server "$CLAW_BIN" 8090 \
+    "CLAW_CONFIG_HOME=$AMIS_ROOT SKILLS_PLUGIN_PATHS=$plugin_paths" \
+    "$AMIS_ROOT/claw-code/rust"
 
   echo "=== 启动 backend (:8080) ==="
   start_one backend "$BACKEND_BIN" 8080 \
-    "SANDBOX_SERVICE_URL=http://localhost:8091 CLAW_AGENT_URL=http://localhost:8090"
+    "SANDBOX_SERVICE_URL=http://localhost:8091 CLAW_AGENT_URL=http://localhost:8090" \
+    "$AMIS_ROOT/backend"
+
+  echo "=== 启动 agent (Python FastAPI :$AGENT_PORT) ==="
+  start_python_agent
 
   sleep 2
   status
+}
+
+# 启动 Python agent（正向飞轮 + RAG 入库/检索）。
+# 用 uv run uvicorn，不带 --reload（后台 nohup 不稳）。
+# 如果 uv 不可用，退回 python -m uvicorn（要求 venv 已激活或全局装了 uvicorn）。
+start_python_agent() {
+  local name="agent"
+  if nc -z localhost "$AGENT_PORT" 2>/dev/null; then
+    echo "⚠️  $name 端口 :$AGENT_PORT 已被占用，跳过"
+    return
+  fi
+  if [[ ! -d "$AGENT_DIR" ]]; then
+    echo "❌ agent 目录不存在: $AGENT_DIR"
+    return 1
+  fi
+  local launcher
+  if command -v uv >/dev/null 2>&1; then
+    launcher="uv run uvicorn"
+  elif command -v uvicorn >/dev/null 2>&1; then
+    launcher="uvicorn"
+  else
+    echo "❌ 找不到 uv 或 uvicorn，请先 pip install uv 或 pip install uvicorn"
+    return 1
+  fi
+  nohup env --chdir="$AGENT_DIR" \
+    PYTHONUNBUFFERED=1 \
+    $launcher src.main:app --host 0.0.0.0 --port "$AGENT_PORT" \
+    > "$LOG_DIR/$name.log" 2>&1 &
+  local pid=$!
+  echo "✅ $name 启动 (PID $pid, log $LOG_DIR/$name.log, cwd $AGENT_DIR, port $AGENT_PORT)"
+  sleep 2
 }
 
 stop_all() {
@@ -63,6 +119,10 @@ stop_all() {
       echo "🛑 已停 $name"
     fi
   done
+  # Python agent：按端口杀（uvicorn 进程名不固定，用端口最稳）
+  if fuser -k -n tcp "$AGENT_PORT" 2>/dev/null; then
+    echo "🛑 已释放 agent :$AGENT_PORT"
+  fi
   for port in 8080 8090 8091; do
     fuser -k -n tcp "$port" 2>/dev/null && echo "🛑 已释放 :$port"
   done
@@ -73,13 +133,109 @@ stop_all() {
 
 status() {
   echo "=== 端口状态 ==="
-  for port in 8080 8090 8091; do
+  for port in 8080 8090 8091 "$AGENT_PORT"; do
+    local label=":$port"
+    case "$port" in
+      8080) label=":8080 backend" ;;
+      8090) label=":8090 claw-agent" ;;
+      8091) label=":8091 sandbox" ;;
+      "$AGENT_PORT") label=":$AGENT_PORT agent (Python)" ;;
+    esac
     if nc -z localhost "$port" 2>/dev/null; then
-      echo "  ✅ :$port UP"
+      echo "  ✅ $label UP"
     else
-      echo "  ❌ :$port DOWN"
+      echo "  ❌ $label DOWN"
     fi
   done
+}
+
+check() {
+  local fail=0
+  echo "=== amis-ai 启动依赖体检 ==="
+
+  # 1. PostgreSQL
+  if pg_isready -h localhost -p 5432 >/dev/null 2>&1; then
+    echo "  ✅ PostgreSQL :5432 可达"
+  else
+    echo "  ❌ PostgreSQL :5432 不可达。检查 docker-compose up -d postgres"
+    fail=1
+  fi
+
+  # 2. pgvector 扩展
+  if PGPASSWORD=amis_ai_dev psql -h localhost -U amis_ai -d amis_ai -tAc \
+      "SELECT 1 FROM pg_extension WHERE extname='vector'" 2>/dev/null | grep -q 1; then
+    echo "  ✅ pgvector 扩展已启用"
+  else
+    echo "  ⚠️  pgvector 扩展未启用（需要 CREATE EXTENSION vector，backend 启动时自动建）"
+  fi
+
+  # 3. Docker daemon（sandbox-service 用）
+  if docker info >/dev/null 2>&1; then
+    echo "  ✅ Docker daemon 可达"
+  else
+    echo "  ❌ Docker daemon 不可达。systemctl start docker / 启动 Docker Desktop"
+    fail=1
+  fi
+
+  # 4. 沙箱镜像
+  if docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+      | grep -q '^amis-ai-sandbox:uniapp-node20$'; then
+    echo "  ✅ 沙箱镜像 amis-ai-sandbox:uniapp-node20 已存在"
+  else
+    echo "  ❌ 沙箱镜像 amis-ai-sandbox:uniapp-node20 不存在"
+    echo "     cd $AMIS_ROOT/shared/docker/sandbox/uniapp-node20 && docker build -t amis-ai-sandbox:uniapp-node20 ."
+    fail=1
+  fi
+
+  # 5. Rust 二进制
+  for bin in "$SANDBOX_BIN" "$CLAW_BIN" "$BACKEND_BIN"; do
+    if [[ -x "$bin" ]]; then
+      echo "  ✅ $(basename $bin) 二进制存在"
+    else
+      echo "  ❌ $(basename $bin) 缺失：$bin"
+      echo "     需先 cargo build"
+      fail=1
+    fi
+  done
+
+  # 6. Python agent venv（uv 或 uvicorn 至少有一个）
+  if command -v uv >/dev/null 2>&1; then
+    echo "  ✅ uv 可用"
+  elif command -v uvicorn >/dev/null 2>&1; then
+    echo "  ✅ uvicorn 可用（无 uv 但能跑）"
+  else
+    echo "  ❌ uv 和 uvicorn 都没装。pip install uv 或 pip install uvicorn"
+    fail=1
+  fi
+
+  # 7. Skills 根目录
+  if [[ -d "$AMIS_ROOT/skills/_common" ]]; then
+    echo "  ✅ skills/_common 桶存在"
+  else
+    echo "  ❌ skills/_common 桶缺失（A.2 应已建好）"
+    fail=1
+  fi
+
+  # 8. 端口冲突（提示，不算 fail）
+  for port in 8080 8090 8091 "$AGENT_PORT" 5173; do
+    if nc -z localhost "$port" 2>/dev/null; then
+      echo "  ⚠️  :$port 已被占用（如要 fresh start 先 stop）"
+    fi
+  done
+
+  # 9. 代理 env（如果你设了 HTTP_PROXY 指向 Clash 等，会拦截内网 LLM 请求）
+  if [[ -n "${HTTP_PROXY:-}${http_proxy:-}${HTTPS_PROXY:-}${https_proxy:-}" ]]; then
+    echo "  ⚠️  HTTP_PROXY 等代理 env 已设。start-services.sh 启动时会清掉，但你手动 cargo run 时要自己 unset"
+  fi
+
+  echo ""
+  if [[ $fail -eq 0 ]]; then
+    echo "✅ 体检通过，可以 ./start-services.sh start"
+    return 0
+  else
+    echo "❌ 体检发现 $fail 项致命问题，先修了再启动"
+    return 1
+  fi
 }
 
 case "${1:-start}" in
@@ -87,5 +243,6 @@ case "${1:-start}" in
   stop)  stop_all ;;
   restart) stop_all; sleep 2; start_all ;;
   status) status ;;
+  check) check ;;
   *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
 esac
