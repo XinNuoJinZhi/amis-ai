@@ -48,7 +48,13 @@
 | `dialog` | `<wd-popup position="center">` 或 `<wd-dialog>` |
 | `drawer` | `<wd-popup position="right">` |
 | `alert` | `<wd-message>` 静态展示 / `uni.showToast` |
-| `toast` | `uni.showToast({ title, icon })` |
+| `toast` | `uni.showToast({ title, icon })`（首选，无需 import） |
+
+> ⚠️ **toast 陷阱（见过的事故）**：`wot-design-uni` **没有** `toast` 这个裸导出。
+> ❌ `import { toast } from 'wot-design-uni'` —— 浏览器会报 `does not provide an export named 'toast'` 并白屏。
+> ✅ 推荐直接用 `uni.showToast({ title, icon })`，不需要任何 import。
+> ✅ 想要 Wot UI 原生样式：在模板里放 `<wd-toast />` + `import { useToast } from 'wot-design-uni'`（注意是 `useToast`，不是 `toast`）。
+> 同理：`useNotify` / `useMessage` 也是组合式 API，都不要写成裸函数 import。
 
 ## 动作类
 
@@ -88,3 +94,53 @@ Wot UI 的表单校验在 `<wd-form>` 级别：
 
 ### 事件命名
 Wot UI 事件 kebab-case：`@click`、`@change`、`@confirm`、`@cancel`。
+
+## 📋 Wot UI 1.6.0 **真实存在**的组件清单（权威）
+
+使用任何**不在下面列表**里的 `<wd-xxx>` 标签，编译后浏览器会立刻报
+`[plugin:vite:import-analysis] Failed to resolve import "wot-design-uni/components/wd-xxx/wd-xxx.vue"`。
+
+**反馈/提示**：wd-toast / wd-notify / wd-message-box / wd-status-tip / wd-loading / wd-loadmore / wd-notice-bar / wd-overlay
+
+**按钮/动作**：wd-button / wd-fab / wd-sort-button / wd-action-sheet
+
+**表单**：wd-form / wd-form-item / wd-input / wd-input-number / wd-textarea / wd-checkbox / wd-checkbox-group / wd-radio / wd-radio-group / wd-switch / wd-rate / wd-slider / wd-search / wd-password-input / wd-signature / wd-slide-verify / wd-upload / wd-number-keyboard / wd-keyboard
+
+**选择器**：wd-picker / wd-picker-view / wd-col-picker / wd-select-picker / wd-datetime-picker / wd-datetime-picker-view / wd-calendar / wd-calendar-view / wd-segmented
+
+**数据展示**：wd-cell / wd-cell-group / wd-card / wd-table / wd-table-col / wd-tag / wd-text / wd-img / wd-img-cropper / wd-video-preview / wd-badge / wd-avatar / wd-avatar-group / wd-circle / wd-count-down / wd-count-to / wd-progress / wd-skeleton / wd-watermark
+
+**布局/导航**：wd-row / wd-col / wd-grid / wd-grid-item / wd-divider / wd-gap / wd-navbar / wd-navbar-capsule / wd-tabbar / wd-tabbar-item / wd-tab / wd-tabs / wd-sidebar / wd-sidebar-item / wd-sticky / wd-sticky-box / wd-index-bar / wd-index-anchor / wd-collapse / wd-collapse-item / wd-drop-menu / wd-drop-menu-item / wd-pagination / wd-steps / wd-step / wd-tour
+
+**弹层/浮层**：wd-popup / wd-popover / wd-curtain / wd-floating-panel / wd-backtop / wd-root-portal / wd-swipe-action / wd-swiper / wd-swiper-nav / wd-transition / wd-resize / wd-tooltip
+
+**基础**：wd-icon / wd-config-provider
+
+---
+
+### ❌ 绝对不要用的组件（它们在 Wot UI 里**不存在**，是其他 UI 库的名字）
+
+| ❌ 错误组件 | 真相 / 替代方案 |
+|-----------|---------------|
+| `<wd-empty>` | Wot UI 没有。空状态用 `<view>` + `<wd-img>` 占位图 + 提示文字；或用 `<wd-status-tip>` |
+| `<wd-result>` | Wot UI 没有。用 `<wd-status-tip>` 或 `<view>` + `<wd-img>` + `<wd-button>` 手拼 |
+| `<wd-list>` | Wot UI 没有。长列表用 `<view v-for>` + `<wd-cell-group>` + `<wd-cell>` |
+| `<wd-dialog>` / `<wd-modal>` | Wot UI 没有。弹窗用 `<wd-message-box>`（命令式 `useMessage()`）或 `<wd-popup position="center">`（声明式） |
+| `<wd-select>` | Wot UI 没有通用 select。用 `<wd-picker>`（单选）、`<wd-col-picker>`（级联）、`<wd-select-picker>`（多选） |
+| `<wd-menu>` / `<wd-menu-item>` | 下拉菜单用 `<wd-drop-menu>` + `<wd-drop-menu-item>` |
+| `<wd-radio-button>` | 用 `<wd-radio-group shape="button">` + `<wd-radio>` |
+| `<wd-pull-refresh>` / `<wd-refresh>` | Wot UI 没有。uni-app 原生用 `onPullDownRefresh()` 生命周期 |
+
+> **工具层已经加了硬校验**：`write_file` / `edit_file` 写入 `.vue` 时会扫描 `<wd-xxx>` 标签，对每个组件检查 `node_modules/wot-design-uni/components/wd-xxx/wd-xxx.vue` 是否真实存在。不存在就直接拒绝写入，给你明确报错。这比 Vite 编译后浏览器报错再修复省一大轮。
+
+---
+
+## 🔧 Wot UI 样式自动注入（极其重要）
+
+Wot UI 的组件样式由 Vite 的 `@dcloudio/vite-plugin-uni` 通过 **easycom 规则自动注入**——只要你在模板里使用 `<wd-xxx>`，对应 CSS 就会自动打包进来。
+
+- ✅ **正确**：直接在 `.vue` 文件中 `<wd-button>点击</wd-button>`，无需任何 import
+- ❌ **错误**：`import "wot-design-uni/index.css"` —— 这个路径**不存在**，Vite 启动后浏览器会立刻报 `[plugin:vite:import-analysis] Failed to resolve import`
+- ❌ **错误**：`import "wot-design-uni/style.css"` —— 同上，Wot UI 并不暴露这种全局样式入口
+
+如果你在旧代码里看到了 `import "wot-design-uni/xxx.css"`，那是 bug——请删除它。

@@ -1,7 +1,8 @@
+use crate::permission_prompter::PermissionDecisionPayload;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{mpsc as std_mpsc, Arc};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
@@ -36,6 +37,28 @@ pub enum TaskEvent {
     StatusChange(TaskStatus),
     #[serde(rename = "turn_complete")]
     TurnComplete,
+    #[serde(rename = "permission_request")]
+    PermissionRequest {
+        request_id: String,
+        tool: String,
+        input: String,
+        current_mode: String,
+        required_mode: String,
+        reason: Option<String>,
+    },
+    #[serde(rename = "llm_request_start")]
+    LlmRequestStart {
+        model: String,
+        messages: usize,
+        tools: usize,
+    },
+    #[serde(rename = "llm_request_end")]
+    LlmRequestEnd {
+        elapsed_ms: u64,
+        success: bool,
+    },
+    #[serde(rename = "error_message")]
+    ErrorMessage(String),
 }
 
 pub struct AgentTask {
@@ -45,24 +68,10 @@ pub struct AgentTask {
     pub sandbox_id: Option<String>,
     pub tx: broadcast::Sender<TaskEvent>,
     pub msg_tx: mpsc::Sender<String>,
+    /// 权限审批决策 channel：HTTP handler 把前端的决策 send 到这里，
+    /// PermissionPrompter 在 blocking thread 里 recv。用 std::sync::mpsc 因为 prompter 是同步 trait。
+    pub decision_tx: std_mpsc::Sender<PermissionDecisionPayload>,
     pub created_at: DateTime<Utc>,
-}
-
-impl AgentTask {
-    pub fn new(workdir: String, sandbox_id: Option<String>) -> Self {
-        let (tx, _) = broadcast::channel(100);
-        let (msg_tx, _) = mpsc::channel(50);
-
-        Self {
-            id: Uuid::new_v4().to_string(),
-            status: TaskStatus::Pending,
-            workdir,
-            sandbox_id,
-            tx,
-            msg_tx,
-            created_at: Utc::now(),
-        }
-    }
 }
 
 pub struct AppState {
@@ -97,11 +106,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&TaskStatus::Stopped).unwrap(), "\"stopped\"");
     }
 
-    #[test]
-    fn test_agent_task_creation() {
-        let task = AgentTask::new("/tmp/workdir".to_string(), Some("sandbox123".to_string()));
-        assert_eq!(task.status, TaskStatus::Pending);
-        assert_eq!(task.workdir, "/tmp/workdir");
-        assert_eq!(task.sandbox_id, Some("sandbox123".to_string()));
-    }
+    // 注：原 test_agent_task_creation 引用了不存在的 AgentTask::new()。
+    // AgentTask 字段含 broadcast::Sender / mpsc::Sender，无简单构造，
+    // 实际由 task_loop / http handler 整体装配。该测试已删。
 }

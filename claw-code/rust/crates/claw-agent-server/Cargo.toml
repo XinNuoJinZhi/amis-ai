@@ -19,7 +19,15 @@ tokio-stream = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 glob = "0.3"
 walkdir = "2"
+regex = "1"
 
 # claw-code 内部 crate
 runtime = { path = "../runtime" }
 api = { path = "../api" }
+# A.3：Skill 工具的 skill 名 → 路径解析，复用 commands::resolve_skill_path
+commands = { path = "../commands" }
+
+# A.5：HOME 隔离需要建临时目录；A.3/A.4 单测也用得到
+tempfile = "3"
+
+[dev-dependencies]

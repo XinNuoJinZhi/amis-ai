@@ -2,6 +2,28 @@
 
 本文件沉淀 Agent 真实生成项目时碰到的错误模式。每条都是"见过的病 + 治过的方"，不是臆想的。
 
+## 🔴 高优先级：绝对不能这么做
+
+### E000: 用 bash 启动 dev server
+**错误用法**（Agent 常犯）：
+```
+tool_call: bash
+arguments: { "command": "cd /workspace && nohup pnpm run dev:h5 &" }
+```
+这样做会导致：
+- bash 是同步阻塞的，`pnpm dev:h5` 进程不会退出 → 工具调用 hang 住
+- 即便 `&` 后台化，沙箱 supervisor 不知道 Vite 是否真的 ready
+- 前端无法收到 `dev_ready` 事件
+
+**正确做法**：用 `dev_start` 工具（无参数）
+```
+tool_call: dev_start
+arguments: {}
+```
+沙箱会接管 Vite 进程生命周期，并异步上报 ready/failed 状态。
+
+---
+
 ## 📌 冷启动基础错误（建议首先检查）
 
 ### E001: `Cannot find module '@dcloudio/uni-components/package.json'`
@@ -75,6 +97,44 @@ const detail = ref<User | null>(null)  // ✅ 用 null，模板里 v-if 判空
   <wd-input prop="name" v-model="formData.name" />  <!-- prop 必填 -->
 </wd-form>
 ```
+
+---
+
+### E007: `import { toast } from 'wot-design-uni'` —— 根本没这个导出
+**现象**（浏览器控制台）：
+```
+SyntaxError: The requested module '/node_modules/.vite/deps/wot-design-uni.js'
+does not provide an export named 'toast' (at xxx.vue:N:M)
+```
+页面白屏、iframe 显示「连接服务器超时」。
+
+**根因**：Agent 把 Wot UI 类比成 sonner / react-hot-toast / vue-toastification 这类库，
+写了 `import { toast } from 'wot-design-uni'`。**wot-design-uni 没有这个导出**。
+Wot UI 的反馈提示只有两种合规姿势：
+
+**修复方案 A（推荐，最简单）**：用 UniApp 内置的 `uni.showToast`，**不需要 import**：
+```ts
+uni.showToast({ title: '保存成功', icon: 'success' })
+uni.showToast({ title: '请求失败', icon: 'none' })  // none = 只显示文字不带图标
+```
+
+**修复方案 B（想要 Wot UI 原生样式）**：在模板里放 `<wd-toast />` + 用 `useToast` 组合式 API：
+```vue
+<template>
+  <wd-toast />                  <!-- ① 必须在模板里放这个组件 -->
+</template>
+
+<script setup lang="ts">
+import { useToast } from 'wot-design-uni'   // ② useToast 是合法导出；toast 不是
+const toast = useToast()
+toast.show('保存成功')
+toast.success('保存成功')
+toast.error('请求失败')
+</script>
+```
+
+同理：`useNotify` / `useMessage` 也是组合式 API，对应 `<wd-notify />` / `<wd-message-box />`，
+**都不要 import 裸函数**。
 
 ---
 

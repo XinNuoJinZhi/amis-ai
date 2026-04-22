@@ -12,7 +12,7 @@ mod utils;
 mod handlers;
 mod services;
 use entity::{user, llm_provider, model_config, generation_history, amis_template,
-    project_generation_task, project_task_message, project_task_event};
+    project_generation_task, project_task_message, project_task_event, code_sample, system_setting};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -21,6 +21,10 @@ pub struct AppState {
     pub sandbox_url: String,
     pub claw_agent_url: String,
     pub workdir_root: String,
+    /// Skills 根目录（运行时读，与 claw-agent-server 共享）。
+    /// A.6 引入：backend 不内置 skills（不用 include_str!），运行时直接读宿主机目录，
+    /// 让前端管理界面能 list/tree/read/write，且任何编辑对**下一个新任务**立即生效。
+    pub skills_root: String,
 }
 
 #[tokio::main]
@@ -52,17 +56,61 @@ async fn main() {
     let _ = db.execute(builder.build(&schema.create_table_from_entity(project_generation_task::Entity))).await;
     let _ = db.execute(builder.build(&schema.create_table_from_entity(project_task_message::Entity))).await;
     let _ = db.execute(builder.build(&schema.create_table_from_entity(project_task_event::Entity))).await;
-
-    // pgvector embedding 列和索引（SeaORM 不支持 vector 类型，需要手动 DDL）
+    // B.1：反向飞轮的 RAG 样例库
+    let _ = db.execute(builder.build(&schema.create_table_from_entity(code_sample::Entity))).await;
+    // B.7：系统配置 key/value
+    let _ = db.execute(builder.build(&schema.create_table_from_entity(system_setting::Entity))).await;
+    // B.7：插入默认 adopt_default_status=pending（D3 决策默认 pending）
     let _ = db.execute_unprepared(
-        "DO $$ BEGIN
-            ALTER TABLE amis_templates ADD COLUMN IF NOT EXISTS embedding vector(1536);
-        EXCEPTION WHEN others THEN NULL;
-        END $$;"
+        "INSERT INTO system_settings (key, value, description, updated_at)
+         VALUES ('adopt_default_status', 'pending', '采纳后入库默认状态：pending=待审，approved=直接进飞轮', NOW())
+         ON CONFLICT (key) DO NOTHING"
+    ).await;
+
+    // pgvector embedding 列（SeaORM 不支持 vector 类型，需要手动 DDL）。
+    // 维度由 EMBEDDING_DIM env 决定（默认 2560，对齐 qwen3-embedding:4b）。
+    // 不建 ivfflat 索引：pgvector 的 ivfflat / hnsw 都最大支持 2000 维，
+    // 我们暂时用 sequential scan（飞轮起步阶段数据量小完全够用，>10K 条再考虑降维或换模型）。
+    let embedding_dim: u32 = std::env::var("EMBEDDING_DIM")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2560);
+    for table in ["amis_templates", "code_samples"] {
+        let _ = db
+            .execute_unprepared(&format!(
+                "DO $$ BEGIN
+                    ALTER TABLE {table} ADD COLUMN IF NOT EXISTS embedding vector({embedding_dim});
+                EXCEPTION WHEN others THEN NULL;
+                END $$;"
+            ))
+            .await;
+    }
+    // B.5 检索时按 (tech_stack, status) 做候选过滤，建组合索引
+    let _ = db.execute_unprepared(
+        "CREATE INDEX IF NOT EXISTS idx_code_samples_stack_status
+         ON code_samples (tech_stack, status)"
+    ).await;
+
+    // 任务级 LLM 选择 + 供应商能力分档的增量 migration
+    let _ = db.execute_unprepared(
+        "ALTER TABLE project_generation_task
+            ADD COLUMN IF NOT EXISTS llm_mode VARCHAR(16) NOT NULL DEFAULT 'default',
+            ADD COLUMN IF NOT EXISTS llm_provider_id INTEGER,
+            ADD COLUMN IF NOT EXISTS llm_model_name TEXT"
     ).await;
     let _ = db.execute_unprepared(
-        "CREATE INDEX IF NOT EXISTS idx_amis_templates_embedding
-         ON amis_templates USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
+        "ALTER TABLE llm_providers
+            ADD COLUMN IF NOT EXISTS capability_tier VARCHAR(16) NOT NULL DEFAULT 'balanced',
+            ADD COLUMN IF NOT EXISTS preferred_model TEXT"
+    ).await;
+    // A.6 RBAC：用户管理员标志（增量 migration）
+    let _ = db.execute_unprepared(
+        "ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE"
+    ).await;
+    // 内置 admin 账号补回管理员权限（兼容已有数据库）
+    let _ = db.execute_unprepared(
+        "UPDATE users SET is_admin = TRUE WHERE username = 'admin'"
     ).await;
 
     // 种子数据
@@ -77,6 +125,14 @@ async fn main() {
     let workdir_root = std::env::var("SANDBOX_WORKDIR_ROOT")
         .unwrap_or_else(|_| "/var/amis-ai/workdirs".to_string());
 
+    // A.6：Skills 根目录（与 claw-agent-server 共享，由 start-services.sh 设 CLAW_CONFIG_HOME）
+    // 优先级：SKILLS_ROOT > CLAW_CONFIG_HOME/skills > 硬编码兜底
+    let skills_root = std::env::var("SKILLS_ROOT").unwrap_or_else(|_| {
+        std::env::var("CLAW_CONFIG_HOME")
+            .map(|h| format!("{}/skills", h))
+            .unwrap_or_else(|_| "/home/karl/Working/TianXing/amis-ai/skills".to_string())
+    });
+
     // 禁用系统代理，避免本地代理软件拦截对 LLM API 的请求
     let state = AppState {
         db,
@@ -87,6 +143,7 @@ async fn main() {
         sandbox_url,
         claw_agent_url,
         workdir_root,
+        skills_root,
     };
 
     // CORS（开发阶段全放开）
@@ -115,10 +172,58 @@ async fn main() {
         .route("/api/templates/:id", get(handlers::template::get_template))
         // 项目生成任务（反向代码生成飞轮）
         .route("/api/projects/tasks", get(handlers::project_generation::list_tasks).post(handlers::project_generation::create_task))
+        .route("/api/projects/tasks/llm-preview", post(handlers::project_generation::llm_preview))
         .route("/api/projects/tasks/:id", get(handlers::project_generation::get_task))
         .route("/api/projects/tasks/:id/message", post(handlers::project_generation::add_message))
         .route("/api/projects/tasks/:id/stop", post(handlers::project_generation::stop_task))
         .route("/api/projects/tasks/:id/events", get(handlers::project_events::ws_events))
+        .route("/api/projects/tasks/:id/events/history", get(handlers::project_events::list_events_history))
+        .route("/api/projects/tasks/:id/dev-status", get(handlers::project_events::get_dev_status))
+        .route("/api/projects/tasks/:id/pages", get(handlers::project_events::list_task_pages))
+        .route("/api/projects/tasks/:id/permission-decision", post(handlers::project_events::post_permission_decision))
+        .route("/api/projects/tasks/:id/runtime-error", post(handlers::project_events::post_runtime_error))
+        // 云端 IDE：文件系统 / 终端 透传（前端走 backend → sandbox-service）
+        .route("/api/projects/tasks/:id/ide/fs/tree", get(handlers::project_ide::fs_tree))
+        .route("/api/projects/tasks/:id/ide/fs/file",
+            get(handlers::project_ide::fs_read)
+                .put(handlers::project_ide::fs_write)
+                .delete(handlers::project_ide::fs_delete))
+        .route("/api/projects/tasks/:id/ide/fs/mkdir", post(handlers::project_ide::fs_mkdir))
+        .route("/api/projects/tasks/:id/ide/terminal", get(handlers::project_ide::terminal_ws))
+
+        // A.6: Skills 知识库管理（仅 admin）
+        .route("/api/skills",
+            get(handlers::skills_admin::list_buckets)
+                .post(handlers::skills_admin::create_bucket))
+        .route("/api/skills/:bucket/tree", get(handlers::skills_admin::bucket_tree))
+        .route("/api/skills/:bucket/file",
+            get(handlers::skills_admin::read_file)
+                .put(handlers::skills_admin::write_file)
+                .delete(handlers::skills_admin::delete_path))
+        .route("/api/skills/:bucket/mkdir", post(handlers::skills_admin::mkdir))
+        .route("/api/skills/:bucket/rename", post(handlers::skills_admin::rename_path))
+
+        // B.3: RAG 样例库 CRUD（仅 admin）
+        .route("/api/code-samples",
+            get(handlers::code_samples::list_code_samples)
+                .post(handlers::code_samples::create_code_sample))
+        .route("/api/code-samples/:id",
+            get(handlers::code_samples::get_code_sample)
+                .put(handlers::code_samples::update_code_sample)
+                .delete(handlers::code_samples::delete_code_sample))
+        .route("/api/code-samples/:id/approve", post(handlers::code_samples::approve_code_sample))
+        .route("/api/code-samples/:id/reject", post(handlers::code_samples::reject_code_sample))
+
+        // B.7: 系统配置（仅 admin）
+        .route("/api/system-settings", get(handlers::system_settings::list_settings))
+        .route("/api/system-settings/:key",
+            get(handlers::system_settings::get_setting)
+                .put(handlers::system_settings::upsert_setting))
+        // 嵌入维度兼容性探测（探活 + 列维度对比）
+        .route("/api/system/embedding-info", get(handlers::system_settings::embedding_info))
+
+        // B.7: 任务采纳（用户级，写回 RAG 样例库）
+        .route("/api/projects/tasks/:id/adopt", post(handlers::project_generation::adopt_task))
         // 内部 API（供 Python 服务调用）
         .route("/api/internal/llm/resolve/:task_type", get(handlers::llm_admin::resolve_llm_config))
         // 健康检查
@@ -154,6 +259,7 @@ async fn seed_users(db: &DatabaseConnection) {
             password: Set(utils::hash::hash_password("admin123")),
             email: Set("admin@amis-ai.com".to_owned()),
             is_active: Set(true),
+            is_admin: Set(true),
             created_at: Set(chrono::Local::now().naive_local()),
             ..Default::default()
         };
@@ -177,6 +283,9 @@ async fn seed_llm_configs(db: &DatabaseConnection) {
             api_key: Set(api_key),
             is_active: Set(true),
             created_at: Set(chrono::Local::now().naive_local()),
+            protocol: Set("openai".to_owned()),
+            capability_tier: Set("balanced".to_owned()),
+            preferred_model: Set(None),
             ..Default::default()
         };
         let provider = provider.insert(db).await.unwrap();

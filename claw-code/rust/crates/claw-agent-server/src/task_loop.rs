@@ -1,16 +1,49 @@
 use crate::api_bridge::ProviderRuntimeClient;
+use crate::permission_prompter::{PermissionDecisionPayload, WebSocketPermissionPrompter};
 use crate::sandbox_client::SandboxClient;
 use crate::state::{TaskEvent, TaskStatus};
 use crate::tool_executor::SandboxToolExecutor;
 use api::ProviderClient;
 use runtime::{ConversationRuntime, PermissionMode, PermissionPolicy, Session};
 use std::path::PathBuf;
+use std::sync::mpsc as std_mpsc;
 use tokio::sync::{broadcast, mpsc};
 
 pub struct LlmConfig {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub model: String,
+    /// 协议类型：openai（OpenAI Chat Completions 兼容）/ anthropic（Anthropic Messages API）。
+    /// 由用户在供应商管理 UI 显式指定，不再靠模型名前缀猜测。
+    pub protocol: String,
+}
+
+/// 任务级权限配置
+pub struct PermissionConfig {
+    pub mode: PermissionMode,
+    /// 工具白名单；None = 全开
+    pub allowed_tools: Option<Vec<String>>,
+}
+
+impl Default for PermissionConfig {
+    fn default() -> Self {
+        Self {
+            mode: PermissionMode::DangerFullAccess,
+            allowed_tools: None,
+        }
+    }
+}
+
+/// 解析字符串到 PermissionMode（前端传过来的）
+pub fn parse_permission_mode(s: &str) -> Option<PermissionMode> {
+    match s {
+        "read_only" | "read-only" => Some(PermissionMode::ReadOnly),
+        "workspace_write" | "workspace-write" => Some(PermissionMode::WorkspaceWrite),
+        "danger_full_access" | "danger-full-access" => Some(PermissionMode::DangerFullAccess),
+        "prompt" => Some(PermissionMode::Prompt),
+        "allow" => Some(PermissionMode::Allow),
+        _ => None,
+    }
 }
 
 pub struct TaskLoopConfig {
@@ -22,54 +55,82 @@ pub struct TaskLoopConfig {
     pub sandbox_url: String,
     pub tech_stack: String,
     pub llm_config: Option<LlmConfig>,
+    pub permission_config: PermissionConfig,
+    pub decision_rx: std_mpsc::Receiver<PermissionDecisionPayload>,
     pub event_tx: broadcast::Sender<TaskEvent>,
     pub msg_rx: mpsc::Receiver<String>,
+    /// B.5：额外注入到 system_prompt 的段（最常见用途：backend 拼好的 RAG Top-K 样例）。
+    /// 这些段会在 Skills 索引之后追加。空 vec 表示不注入。
+    pub extra_system_sections: Vec<String>,
 }
 
-/// 注入 LLM 配置到环境变量，并返回 claw-code 能识别的 effective model 名
-/// 策略：只有 claude-* 走 Anthropic，其他全部走 OpenAI 兼容（大多数自建/国产模型都兼容 OpenAI API）
-fn apply_llm_config_to_env(config: &LlmConfig) -> String {
-    let model_lower = config.model.to_lowercase();
+/// 决定走哪条后端路径
+pub enum BackendKind {
+    /// Anthropic 协议，走 claw-code 的 api crate
+    Anthropic,
+    /// OpenAI 兼容协议（Ollama / DeepSeek / 通义千问 / DashScope / OpenAI），走我们自己的解析器
+    OpenAiCompat {
+        base_url: String,
+        api_key: Option<String>,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+    },
+}
 
-    if model_lower.starts_with("claude-") {
-        if let Some(key) = &config.api_key {
-            std::env::set_var("ANTHROPIC_API_KEY", key);
-        }
-        if let Some(url) = &config.base_url {
-            std::env::set_var("ANTHROPIC_BASE_URL", url);
-        }
-        tracing::info!(
-            "LLM config applied as Anthropic: model={}, base_url={:?}",
-            config.model,
-            config.base_url
-        );
-        config.model.clone()
-    } else {
-        // 默认走 OpenAI 兼容路径（Ollama/DeepSeek/通义千问/DashScope/LiteLLM 等）
-        if let Some(key) = &config.api_key {
-            std::env::set_var("OPENAI_API_KEY", key);
-        }
-        if let Some(url) = &config.base_url {
-            std::env::set_var("OPENAI_BASE_URL", url);
-        }
+/// 根据 llm_config 的 protocol 字段决定走哪条后端路径。
+/// 不再使用模型名前缀判断，协议完全由用户在供应商配置里显式指定。
+/// 返回 (backend_kind, effective_model_name)。
+fn decide_backend(default_model: &str, config: Option<&LlmConfig>) -> (BackendKind, String) {
+    // 没有 llm_config → 走 Anthropic 默认路径（依赖 ANTHROPIC_API_KEY 环境变量）
+    let Some(cfg) = config else {
+        return (BackendKind::Anthropic, default_model.to_string());
+    };
 
-        // 如果 model 不以 claw-code 能识别的前缀开头，加上 "openai/" 前缀让路由生效
-        let effective_model = if model_lower.starts_with("gpt-")
-            || model_lower.starts_with("openai/")
-            || model_lower.starts_with("grok-")
-        {
-            config.model.clone()
-        } else {
-            format!("openai/{}", config.model)
-        };
+    match cfg.protocol.as_str() {
+        "anthropic" => {
+            if let Some(key) = &cfg.api_key {
+                std::env::set_var("ANTHROPIC_API_KEY", key);
+            }
+            if let Some(url) = &cfg.base_url {
+                // claw-code 的 AnthropicClient 会自己拼 `/v1/messages`，
+                // 所以这里去掉用户可能误带的 `/v1` 后缀，避免出现 `/v1/v1/messages`
+                let normalized = url.trim_end_matches('/').trim_end_matches("/v1");
+                std::env::set_var("ANTHROPIC_BASE_URL", normalized);
+                tracing::info!(
+                    "Backend: Anthropic, model={}, base_url={} (normalized from {})",
+                    cfg.model,
+                    normalized,
+                    url
+                );
+            } else {
+                tracing::info!("Backend: Anthropic, model={} (no base_url override)", cfg.model);
+            }
+            (BackendKind::Anthropic, cfg.model.clone())
+        }
+        // 默认走 OpenAI 兼容路径（包括 openai、未知值、空值）
+        _ => {
+            let base_url = cfg
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
-        tracing::info!(
-            "LLM config applied as OpenAI-compat: original_model={}, effective_model={}, base_url={:?}",
-            config.model,
-            effective_model,
-            config.base_url
-        );
-        effective_model
+            tracing::info!(
+                "Backend: OpenAI-compat (protocol={}), model={}, base_url={}",
+                cfg.protocol,
+                cfg.model,
+                base_url
+            );
+
+            (
+                BackendKind::OpenAiCompat {
+                    base_url,
+                    api_key: cfg.api_key.clone(),
+                    temperature: None, // 后续可从 cfg 传入
+                    max_tokens: None,
+                },
+                cfg.model.clone(),
+            )
+        }
     }
 }
 
@@ -91,16 +152,17 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
         sandbox_url,
         tech_stack,
         llm_config,
+        permission_config,
+        decision_rx,
         event_tx,
         msg_rx,
+        extra_system_sections,
     } = config;
 
-    // 如果调用方传入了 LLM 配置，注入对应的 env var 并返回 claw-code 能识别的 model 名
-    let effective_model = if let Some(cfg) = &llm_config {
-        apply_llm_config_to_env(cfg)
-    } else {
-        model
-    };
+    // 根据 llm_config 决定走哪条后端路径：
+    // - 有 llm_config 且 model 不是 claude-* → OpenAI 兼容（我们自己的解析器，支持 reasoning）
+    // - 其他 → Anthropic（claw-code api crate）
+    let (backend_kind, effective_model) = decide_backend(&model, llm_config.as_ref());
 
     let _ = event_tx.send(TaskEvent::StatusChange(TaskStatus::Running));
 
@@ -113,15 +175,57 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
 
         let session = Session::new().with_workspace_root(workdir_path.clone());
 
-        let provider = ProviderClient::from_model(&effective_model)
-            .map_err(|e| anyhow::anyhow!("Failed to init provider: {}", e))?;
+        let api_client = match backend_kind {
+            BackendKind::OpenAiCompat {
+                base_url,
+                api_key,
+                temperature,
+                max_tokens,
+            } => ProviderRuntimeClient::new_openai_compat(
+                base_url,
+                api_key,
+                effective_model.clone(),
+                temperature,
+                max_tokens,
+                event_tx.clone(),
+            ),
+            BackendKind::Anthropic => {
+                let provider = ProviderClient::from_model(&effective_model)
+                    .map_err(|e| anyhow::anyhow!("Failed to init provider: {}", e))?;
+                ProviderRuntimeClient::new_anthropic(provider, effective_model.clone(), event_tx.clone())
+            }
+        };
 
-        let api_client = ProviderRuntimeClient::new(provider, effective_model, event_tx.clone())
-            .map_err(|e| anyhow::anyhow!("Failed to init API client: {}", e))?;
+        let tool_executor = SandboxToolExecutor::new(sandbox, sandbox_id, workdir_path, event_tx.clone());
 
-        let tool_executor = SandboxToolExecutor::new(sandbox, sandbox_id, workdir_path);
+        // 用前端传来的权限配置构造 PermissionPolicy
+        // 如果指定了工具白名单，通过 with_tool_requirement 对每个工具设定最低权限要求
+        let mut policy = PermissionPolicy::new(permission_config.mode);
+        if let Some(allowed) = &permission_config.allowed_tools {
+            // 工具 → 最低权限的内置映射（与 claw-code mvp_tool_specs 一致）
+            let tool_reqs: &[(&str, PermissionMode)] = &[
+                ("bash", PermissionMode::DangerFullAccess),
+                ("read_file", PermissionMode::ReadOnly),
+                ("write_file", PermissionMode::WorkspaceWrite),
+                ("edit_file", PermissionMode::WorkspaceWrite),
+                ("glob_search", PermissionMode::ReadOnly),
+                ("grep_search", PermissionMode::ReadOnly),
+            ];
+            for (name, required) in tool_reqs {
+                if allowed.iter().any(|t| t == name) {
+                    policy = policy.with_tool_requirement(*name, *required);
+                }
+            }
+        }
 
-        let policy = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
+        // 根据模式决定是否创建 WebSocketPermissionPrompter
+        // DangerFullAccess 和 Allow 模式下不会触发审批，不需要 prompter
+        let mut prompter: Option<WebSocketPermissionPrompter> =
+            if matches!(permission_config.mode, PermissionMode::DangerFullAccess | PermissionMode::Allow) {
+                None
+            } else {
+                Some(WebSocketPermissionPrompter::new(event_tx.clone(), decision_rx))
+            };
 
         // 基础 prompt：身份、工作目录、工具使用原则（强调"只输出工具调用"的纪律）
         let mut system_prompt = vec![format!(
@@ -151,17 +255,31 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
             workdir, tech_stack
         )];
 
-        // 根据 tech_stack 加载对应的 Skills bundle
+        // A.4：用索引模式构建 Skills 段（progressive disclosure）。
+        // L0: _common 全文 + L1: 当前 stack 全文 + L2: 其他 stack 索引 + L3: 用户日志识别协议。
+        // references/ 下的详细文档由 Agent 通过 `Skill` 工具或 `Read` 按需加载。
         let skills_root = crate::skills::default_skills_root();
-        let skill_sections = crate::skills::load_skills_bundle(&skills_root, &tech_stack);
+        let plugin_roots = crate::skills::default_plugin_roots();
+        let skill_sections = crate::skills::build_skills_system_prompt(
+            &skills_root,
+            &plugin_roots,
+            &tech_stack,
+        );
         let skill_count = skill_sections.len();
         system_prompt.extend(skill_sections);
 
+        // B.5：追加 backend 在任务创建时拼好的额外段（典型来源：RAG Top-K 样例）。
+        let extra_count = extra_system_sections.len();
+        system_prompt.extend(extra_system_sections);
+
         tracing::info!(
-            "Task {} loaded {} skill sections for tech_stack: {}",
+            "Task {} loaded {} skill sections + {} extra sections for tech_stack={} (skills_root={}, plugins={})",
             task_id,
             skill_count,
-            tech_stack
+            extra_count,
+            tech_stack,
+            skills_root.display(),
+            plugin_roots.len()
         );
 
         let mut runtime = ConversationRuntime::new(
@@ -175,8 +293,19 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
         // 第一轮：初始消息
         tracing::info!("Task {} starting initial turn", task_id);
         let summary = runtime
-            .run_turn(initial_message, None)
-            .map_err(|e| anyhow::anyhow!("initial run_turn failed: {}", e))?;
+            .run_turn(
+                initial_message,
+                prompter
+                    .as_mut()
+                    .map(|p| p as &mut dyn runtime::PermissionPrompter),
+            )
+            .map_err(|e| {
+                let _ = event_tx.send(TaskEvent::ErrorMessage(format!(
+                    "❌ 初始对话失败: {}",
+                    e
+                )));
+                anyhow::anyhow!("initial run_turn failed: {}", e)
+            })?;
         tracing::info!(
             "Task {} initial turn done: {} iterations",
             task_id,
@@ -188,7 +317,12 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
         let mut msg_rx = msg_rx;
         while let Some(msg) = msg_rx.blocking_recv() {
             tracing::info!("Task {} received follow-up message", task_id);
-            match runtime.run_turn(msg, None) {
+            match runtime.run_turn(
+                msg,
+                prompter
+                    .as_mut()
+                    .map(|p| p as &mut dyn runtime::PermissionPrompter),
+            ) {
                 Ok(summary) => {
                     tracing::info!(
                         "Task {} follow-up turn done: {} iterations",
@@ -199,6 +333,10 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
                 }
                 Err(e) => {
                     tracing::error!("Task {} follow-up turn failed: {}", task_id, e);
+                    let _ = event_tx.send(TaskEvent::ErrorMessage(format!(
+                        "❌ 追加对话失败: {}",
+                        e
+                    )));
                     let _ = event_tx.send(TaskEvent::StatusChange(TaskStatus::Failed));
                     return Err(anyhow::anyhow!("follow-up turn failed: {}", e));
                 }

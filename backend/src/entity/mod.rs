@@ -6,3 +6,5 @@ pub mod amis_template;
 pub mod project_generation_task;
 pub mod project_task_message;
 pub mod project_task_event;
+pub mod code_sample;
+pub mod system_setting;

@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Table, Button, Modal, Form, Select, InputNumber, Switch, Space, message, Popconfirm, Tag, Slider, Input } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { Alert, Table, Button, Modal, Form, Select, InputNumber, Switch, Space, Spin, message, Popconfirm, Tag, Slider, Input } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, ExperimentOutlined } from '@ant-design/icons';
 import { getModelConfigs, createModelConfig, updateModelConfig, deleteModelConfig, getProviders, getProviderModels } from '../../services/llm';
+import { getEmbeddingInfo, type EmbeddingInfo } from '../../services/systemSettings';
 
 const TASK_TYPE_MAP: Record<string, { label: string; color: string }> = {
   generation: { label: '生成', color: 'blue' },
   embedding: { label: '向量化', color: 'purple' },
   chat: { label: '对话', color: 'cyan' },
+  code_generation: { label: '代码生成', color: 'orange' },
 };
 
 interface ConfigItem {
@@ -33,6 +35,20 @@ export default function ModelConfigs() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form] = Form.useForm();
+  const [embedInfo, setEmbedInfo] = useState<EmbeddingInfo | null>(null);
+  const [embedProbing, setEmbedProbing] = useState(false);
+
+  const probeEmbedding = useCallback(async () => {
+    setEmbedProbing(true);
+    try {
+      const info = await getEmbeddingInfo();
+      setEmbedInfo(info);
+    } catch (e: any) {
+      message.error(e.response?.data?.error || '探测失败');
+    } finally {
+      setEmbedProbing(false);
+    }
+  }, []);
 
   const fetchConfigs = useCallback(async () => {
     setLoading(true);
@@ -157,6 +173,20 @@ export default function ModelConfigs() {
 
   return (
     <div>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="代码生成任务现在按任务级选择模型"
+        description="在「项目工作台 → 新建任务」里可以为每个任务单独选 auto / 手动 provider+model。这里的模型配置仅作为 Amis 生成 / 聊天 / 向量化 的默认值，以及 code_generation 兜底（新建任务选「使用系统默认」时生效）。"
+      />
+
+      {/* Embedding 维度兼容性条 */}
+      <EmbeddingCompatibilityBar
+        info={embedInfo}
+        probing={embedProbing}
+        onProbe={probeEmbedding}
+      />
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <h3 style={{ margin: 0 }}>模型配置管理</h3>
         <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>新增配置</Button>
@@ -181,10 +211,14 @@ export default function ModelConfigs() {
       >
         <Form form={form} layout="vertical">
           <Form.Item name="task_type" label="任务类型" rules={[{ required: true, message: '请选择任务类型' }]}>
-            <Select placeholder="选择任务类型">
+            <Select placeholder="选择任务类型" disabled={editingId != null}>
               <Select.Option value="generation">生成 (generation)</Select.Option>
               <Select.Option value="embedding">向量化 (embedding)</Select.Option>
               <Select.Option value="chat">对话 (chat)</Select.Option>
+              {/* 编辑模式下保留 code_generation 展示能力，新建不再暴露该选项 */}
+              {editingId != null && (
+                <Select.Option value="code_generation">代码生成 (code_generation，兜底用)</Select.Option>
+              )}
             </Select>
           </Form.Item>
           <Form.Item name="provider_id" label="供应商" rules={[{ required: true, message: '请选择供应商' }]}>
@@ -217,5 +251,82 @@ export default function ModelConfigs() {
         </Form>
       </Modal>
     </div>
+  );
+}
+
+// ───────────────────────── Embedding 维度兼容性条
+function EmbeddingCompatibilityBar({
+  info,
+  probing,
+  onProbe,
+}: {
+  info: EmbeddingInfo | null;
+  probing: boolean;
+  onProbe: () => void;
+}) {
+  if (!info && !probing) {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message={
+          <Space>
+            <span>Embedding 兼容性未探测</span>
+            <Button size="small" icon={<ExperimentOutlined />} onClick={onProbe} loading={probing}>
+              探测当前 embedding 模型与 pgvector 列是否匹配
+            </Button>
+          </Space>
+        }
+        description={
+          <span style={{ fontSize: 12 }}>
+            点击后会调用 Python agent 对当前配置的 embedding 模型做一次真实调用，对比模型实际输出维度
+            与 pgvector 列声明维度。<strong>不匹配时 RAG 入库/检索都会失败</strong>。
+          </span>
+        }
+      />
+    );
+  }
+  if (probing) {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message={<><Spin size="small" /> &nbsp;正在探测 embedding 维度...</>}
+      />
+    );
+  }
+  // info 一定不为 null
+  const i = info!;
+  const type: 'success' | 'warning' | 'error' = i.compatible
+    ? 'success'
+    : i.probe_ok
+    ? 'warning'
+    : 'error';
+  return (
+    <Alert
+      type={type}
+      showIcon
+      style={{ marginBottom: 16 }}
+      message={
+        <Space wrap>
+          <span><strong>Embedding 兼容性</strong></span>
+          <Tag color={i.pg_column_dim ? 'blue' : 'default'}>
+            pgvector 列：{i.pg_column_dim ?? 'unknown'} 维
+          </Tag>
+          <Tag color={i.env_dim ? 'cyan' : 'default'}>
+            EMBEDDING_DIM env：{i.env_dim ?? 'unset'}
+          </Tag>
+          <Tag color={i.actual_model_dim ? (i.compatible ? 'green' : 'red') : 'default'}>
+            模型实测：{i.actual_model_dim ?? '失败'} 维
+          </Tag>
+          <Button size="small" icon={<ExperimentOutlined />} onClick={onProbe}>
+            重新探测
+          </Button>
+        </Space>
+      }
+      description={<span style={{ fontSize: 12 }}>{i.hint}</span>}
+    />
   );
 }

@@ -13,6 +13,8 @@ pub struct LlmConfig {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub model: String,
+    /// 协议类型：openai（OpenAI Chat Completions 兼容）/ anthropic（Anthropic Messages API）
+    pub protocol: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -23,6 +25,11 @@ pub struct CreateTaskRequest {
     pub model: Option<String>,
     pub tech_stack: Option<String>,
     pub llm_config: Option<LlmConfig>,
+    pub permission_config: Option<serde_json::Value>,
+    /// B.5：可选的额外 system_prompt 段（典型用途：RAG Top-K 样例）。
+    /// claw-agent-server 会在 Skills 索引后面追加这些段。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_system_sections: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -79,6 +86,23 @@ impl ClawAgentClient {
             Ok(())
         } else {
             Err(anyhow::anyhow!("stop task failed: {}", resp.status()))
+        }
+    }
+
+    pub async fn send_permission_decision(
+        &self,
+        claw_session_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<()> {
+        let url = format!("{}/tasks/{}/permission-decision", self.base_url, claw_session_id);
+        let resp = self.client.post(&url).json(&payload).send().await?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "send permission decision failed: {}",
+                resp.status()
+            ))
         }
     }
 

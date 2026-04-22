@@ -1,13 +1,15 @@
+use crate::permission_prompter::PermissionDecisionPayload;
 use crate::state::{AgentTask, AppState, SharedState, TaskStatus};
-use crate::task_loop::{spawn_task_loop, TaskLoopConfig};
+use crate::task_loop::{parse_permission_mode, spawn_task_loop, PermissionConfig, TaskLoopConfig};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
+use runtime::PermissionMode;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{mpsc as std_mpsc, Arc};
 use tokio::sync::{broadcast, mpsc};
 
 #[derive(Debug, Deserialize, Clone)]
@@ -15,6 +17,9 @@ pub struct LlmConfigInput {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub model: String,
+    /// 协议类型：openai / anthropic。缺省视为 openai。
+    #[serde(default)]
+    pub protocol: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +30,17 @@ pub struct CreateTaskRequest {
     pub model: Option<String>,
     pub tech_stack: Option<String>,
     pub llm_config: Option<LlmConfigInput>,
+    pub permission_config: Option<PermissionConfigInput>,
+    /// B.5：可选的额外 system_prompt 段（最常见用途：backend 拼好的 RAG Top-K 样例段）。
+    /// 这些段会在 Skills 索引之后被追加，不替换任何现有内容。
+    #[serde(default)]
+    pub extra_system_sections: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PermissionConfigInput {
+    pub mode: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,9 +55,22 @@ pub async fn create_task(
 ) -> Result<Json<CreateTaskResponse>, (StatusCode, Json<serde_json::Value>)> {
     let (event_tx, _) = broadcast::channel(200);
     let (msg_tx, msg_rx) = mpsc::channel(50);
+    let (decision_tx, decision_rx) = std_mpsc::channel::<PermissionDecisionPayload>();
 
     let task_id = uuid::Uuid::new_v4().to_string();
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
+
+    // 解析前端传来的权限配置（没传 → 默认 DangerFullAccess）
+    let pc_input = req.permission_config.clone().unwrap_or_default();
+    let mode = pc_input
+        .mode
+        .as_deref()
+        .and_then(parse_permission_mode)
+        .unwrap_or(PermissionMode::DangerFullAccess);
+    let permission_config = PermissionConfig {
+        mode,
+        allowed_tools: pc_input.allowed_tools,
+    };
 
     let task = AgentTask {
         id: task_id.clone(),
@@ -50,6 +79,7 @@ pub async fn create_task(
         sandbox_id: Some(req.sandbox_id.clone()),
         tx: event_tx.clone(),
         msg_tx,
+        decision_tx,
         created_at: chrono::Utc::now(),
     };
 
@@ -70,9 +100,13 @@ pub async fn create_task(
             base_url: c.base_url,
             api_key: c.api_key,
             model: c.model,
+            protocol: c.protocol.unwrap_or_else(|| "openai".to_string()),
         }),
+        permission_config,
+        decision_rx,
         event_tx,
         msg_rx,
+        extra_system_sections: req.extra_system_sections.unwrap_or_default(),
     });
 
     Ok(Json(CreateTaskResponse {
@@ -127,6 +161,45 @@ pub async fn stop_task(
     drop(task);
 
     Ok(Json(serde_json::json!({"status": "stopped"})))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PermissionDecisionRequest {
+    pub request_id: String,
+    pub allow: bool,
+    #[serde(default)]
+    pub remember: bool,
+    pub reason: Option<String>,
+}
+
+pub async fn post_permission_decision(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(req): Json<PermissionDecisionRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let tasks = state.tasks.read().await;
+    let task = tasks.get(&id).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Task not found"})),
+        )
+    })?;
+
+    task.decision_tx
+        .send(PermissionDecisionPayload {
+            request_id: req.request_id,
+            allow: req.allow,
+            remember: req.remember,
+            reason: req.reason,
+        })
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "failed to dispatch decision"})),
+            )
+        })?;
+
+    Ok(Json(serde_json::json!({"status": "ok"})))
 }
 
 pub async fn debug_state(State(state): State<SharedState>) -> Json<serde_json::Value> {

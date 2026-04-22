@@ -4,6 +4,8 @@ export interface User {
   email: string;
   avatar: string | null;
   is_active: boolean;
+  /** A.6 RBAC：是否管理员（控制知识库管理菜单可见性 + skills 接口可调） */
+  is_admin?: boolean;
   created_at: string;
 }
 
@@ -18,6 +20,11 @@ export interface LlmProvider {
   base_url: string;
   is_active: boolean;
   created_at: string;
+  protocol: string;
+  /** auto 模式能力档位：fast / balanced / strong / frontier */
+  capability_tier: string;
+  /** auto 模式下该供应商被选中时优先用的模型名 */
+  preferred_model: string | null;
 }
 
 export interface ModelConfig {

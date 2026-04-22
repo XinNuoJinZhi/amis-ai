@@ -4,3 +4,7 @@ pub mod history;
 pub mod template;
 pub mod project_generation;
 pub mod project_events;
+pub mod project_ide;
+pub mod skills_admin;
+pub mod code_samples;
+pub mod system_settings;

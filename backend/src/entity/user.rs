@@ -12,6 +12,12 @@ pub struct Model {
     pub password: String,
     pub avatar: Option<String>,
     pub is_active: bool,
+    /// A.6 RBAC：管理员标志。
+    /// `is_admin = true` 才能访问 Skills 管理 / RAG 审核等敏感接口。
+    /// 默认为 false（普通用户），seed_users 把内置 "admin" 账号置为 true。
+    /// 增量 migration 在 main.rs 做（ADD COLUMN IF NOT EXISTS ...）。
+    #[serde(default)]
+    pub is_admin: bool,
     pub created_at: DateTime,
 }
 
