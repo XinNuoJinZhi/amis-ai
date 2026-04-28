@@ -97,7 +97,9 @@ async fn select_manual(
     })
 }
 
-/// 旧 model_configs 逻辑：先 code_generation，fallback 到 generation
+/// 旧 model_configs 逻辑：先 code_generation，fallback 到 generation。
+/// Synthetic Honey：调用方可通过 preferred_task_type 先试一个更特化的 task_type
+/// （如 "skill_authoring"），miss 后再回退到现有默认顺序。
 async fn select_default(state: &AppState) -> Result<LlmDecision, String> {
     for task_type in ["code_generation", "generation"] {
         if let Some(decision) = fetch_default_for_task_type(state, task_type).await {
@@ -105,6 +107,52 @@ async fn select_default(state: &AppState) -> Result<LlmDecision, String> {
         }
     }
     Err("无可用的系统默认 LLM 配置，请先在「系统设置 → 供应商管理」激活一个供应商".to_string())
+}
+
+/// Synthetic Honey：Skill 起草专用的 LLM 选择入口——带 task_type fallback 链。
+/// 优先 skill_authoring → code_generation → generation，都 miss 就返回错误。
+///
+/// 当前实施：agent 侧直接调 `skill_authoring` task_type 走 Python `get_llm_config`；
+/// 这个 Rust 入口预留给"将来 backend 自己触发 LLM 决策（比如 dry-run / 元数据探测）"的场景。
+#[allow(dead_code)]
+pub async fn select_for_skill_authoring(state: &AppState) -> Result<LlmDecision, String> {
+    for task_type in ["skill_authoring", "code_generation", "generation"] {
+        if let Some(decision) = fetch_default_for_task_type(state, task_type).await {
+            return Ok(decision);
+        }
+    }
+    Err("无可用的 LLM 配置，请先在「系统设置 → LLM 供应商」激活一个供应商".to_string())
+}
+
+/// 2026-04-25：通用 AI 对话页（左侧菜单「AI 对话」）专用 LLM 选择入口。
+/// 优先 chat task_type，miss 则回落 generation。
+pub async fn select_for_chat(state: &AppState) -> Result<LlmDecision, String> {
+    for task_type in ["chat", "generation"] {
+        if let Some(decision) = fetch_default_for_task_type(state, task_type).await {
+            return Ok(decision);
+        }
+    }
+    Err(
+        "无可用的 LLM 配置，请在「系统设置 → 模型配置」给「通用对话」槽位选一个供应商和模型"
+            .to_string(),
+    )
+}
+
+/// 2026-04 RAG 质量闭环 Phase 2：LLM 评委专用 LLM 选择入口。
+///
+/// **评审建议**：quality_judge **故意**跳过 code_generation，直接 fallback 到 generation，
+/// 鼓励 admin 配跨 provider 的模型（避"评委是选手"的同族偏见）。
+/// 如果 admin 没配 quality_judge task_type，则用 generation 通用模型兜底。
+pub async fn select_for_quality_judge(state: &AppState) -> Result<LlmDecision, String> {
+    for task_type in ["quality_judge", "generation"] {
+        if let Some(decision) = fetch_default_for_task_type(state, task_type).await {
+            return Ok(decision);
+        }
+    }
+    Err(
+        "无可用的 LLM 配置。建议在「系统设置 → LLM 供应商」给 task_type=quality_judge 绑一个与 generation 不同 provider 的模型（跨 provider 避同族偏见）。"
+            .to_string(),
+    )
 }
 
 async fn fetch_default_for_task_type(state: &AppState, task_type: &str) -> Option<LlmDecision> {

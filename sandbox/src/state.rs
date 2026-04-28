@@ -30,6 +30,10 @@ pub struct Sandbox {
     pub dev_status: DevStatus,
     pub recent_logs: Vec<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// 2026-04：dev server 启动命令，None 时 fallback 到默认 `pnpm run dev:h5`（兼容 uniapp 老任务）。
+    /// 由 backend 创建时根据 template_registry 下发，或 Agent 在 dev_start 调用时即席指定。
+    #[serde(default)]
+    pub dev_command: Option<String>,
 }
 
 pub struct AppState {

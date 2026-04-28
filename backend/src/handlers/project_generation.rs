@@ -22,7 +22,12 @@ use crate::AppState;
 #[derive(Debug, Deserialize)]
 pub struct CreateTaskPayload {
     pub amis_json: String,
+    /// **DEPRECATED（2026-04 Phase 4.4）**：旧单值技术栈字符串。
+    /// 新客户端请发 `tech_stacks: [...]` 数组字段；本字段留作**外部无前端调用方**的兼容入口。
+    /// 当新字段存在时，本字段被 backend 忽略；两字段都缺则保留"uniapp-wot-h5"默认兜底。
+    /// DB 旧单值列 `project_generation_task.tech_stack` 仍然写入（Phase 4 观察期 ≥20 天后才真正 DROP）。
     pub tech_stack: Option<String>,
+    /// **DEPRECATED（2026-04 Phase 4.4）**：旧单值 UI 库字符串。见 `tech_stack` 同段说明。
     pub ui_library: Option<String>,
     pub extra_prompt: Option<String>,
     pub source_history_id: Option<i32>,
@@ -33,6 +38,27 @@ pub struct CreateTaskPayload {
     pub llm_provider_id: Option<i32>,
     /// manual 模式下必填
     pub llm_model_name: Option<String>,
+    // ── 2026-04 多维字段（可选，缺省走 legacy 单字符串路径）
+    /// 目标平台：web / mobile / 自定义
+    #[serde(default)]
+    pub platform: Option<String>,
+    /// 技术栈标签数组（多选）
+    #[serde(default)]
+    pub tech_stacks: Option<Vec<String>>,
+    /// UI 组件库标签数组（多选）
+    #[serde(default)]
+    pub ui_libs: Option<Vec<String>>,
+    /// 选中的底座模板名（registry.yaml 里的 name 字段）；None 或 "__blank__" = 从零搭建
+    #[serde(default)]
+    pub template_name: Option<String>,
+    /// 用户在 UI 上显式勾选要激活的 skill 桶（留空则按维度推导）
+    #[serde(default)]
+    pub explicit_buckets: Option<Vec<String>>,
+    /// 2026-04-25 是否启用确定性翻译器（实验功能）。
+    /// - None / false：默认走原 LLM 路径（生产稳定路径）
+    /// - true：先试翻译器，fully_supported 就跳过 LLM；降级则回退 LLM
+    #[serde(default)]
+    pub enable_translator: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,8 +110,59 @@ pub async fn create_task(
         Err(e) => return e.into_response(),
     };
 
-    let tech_stack = payload.tech_stack.unwrap_or_else(|| "uniapp-wot-h5".to_string());
-    let ui_library = payload.ui_library.unwrap_or_else(|| "wot-ui".to_string());
+    // 2026-04 多维字段规范化（新旧字段双向兜底）
+    //   - 新客户端传 tech_stacks/ui_libs/platform/template_name
+    //   - 旧客户端只传 tech_stack/ui_library
+    // 最终 DB 双写：新数组列 + 旧单值列并存，Phase 4 才弃用旧列
+    let tech_stacks_arr: Vec<String> = payload
+        .tech_stacks
+        .clone()
+        .unwrap_or_else(|| {
+            payload
+                .tech_stack
+                .clone()
+                .map(|s| vec![s])
+                .unwrap_or_else(|| vec!["uniapp-wot-h5".to_string()])
+        });
+    let ui_libs_arr: Vec<String> = payload
+        .ui_libs
+        .clone()
+        .unwrap_or_else(|| {
+            payload
+                .ui_library
+                .clone()
+                .map(|s| vec![s])
+                .unwrap_or_else(|| vec!["wot-ui".to_string()])
+        });
+    let tech_stack = payload
+        .tech_stack
+        .clone()
+        .unwrap_or_else(|| tech_stacks_arr.first().cloned().unwrap_or_else(|| "uniapp-wot-h5".to_string()));
+    let ui_library = payload
+        .ui_library
+        .clone()
+        .unwrap_or_else(|| ui_libs_arr.first().cloned().unwrap_or_else(|| "wot-ui".to_string()));
+    let platform_str = payload
+        .platform
+        .clone()
+        .unwrap_or_else(|| {
+            // 旧客户端兜底：按 tech_stack 前缀猜
+            if tech_stack.starts_with("uniapp") || tech_stack.starts_with("rn-") {
+                "mobile".to_string()
+            } else {
+                "web".to_string()
+            }
+        });
+    // template_name 解析规则：
+    //   - 显式传 "__blank__" 或 null → 从零搭建
+    //   - 传具体 name → 从 registry 查；查不到退回 {tech_stack}-template legacy 路径
+    //   - 未传 → 走 {tech_stack}-template legacy 路径（保持老行为）
+    let template_name: Option<String> = match payload.template_name.clone() {
+        Some(n) if n == "__blank__" => Some("__blank__".to_string()),
+        Some(n) => Some(n),
+        None => Some(format!("{}-template", tech_stack)),
+    };
+    let explicit_buckets_arr = payload.explicit_buckets.clone().unwrap_or_default();
 
     // 0. 先决策本次任务用哪个 LLM（manual / auto / default）
     let decision = match llm_selector::select_for_task(
@@ -108,8 +185,15 @@ pub async fn create_task(
         }
     };
 
-    // 1. 先在 DB 创建任务记录（pending）
+    // 1. 在 DB 创建任务记录（pending）
+    //    2026-04 性能优化：多维字段（platform / template_name / platforms / tech_stacks / ui_libs /
+    //    selected_skill_buckets）原本因 entity 缺失要走 INSERT + 原生 SQL UPDATE 二次写，现在 entity 补全，
+    //    一次 ActiveModel Insert 搞定，少一次 DB round-trip。
     let now = chrono::Local::now().naive_local();
+    let template_name_for_db: Option<String> = match template_name.as_deref() {
+        Some("__blank__") => None,
+        other => other.map(|s| s.to_string()),
+    };
     let task_record = project_generation_task::ActiveModel {
         user_id: Set(user.id),
         source_history_id: Set(payload.source_history_id),
@@ -124,6 +208,13 @@ pub async fn create_task(
         llm_mode: Set(decision.mode.clone()),
         llm_provider_id: Set(Some(decision.provider_id)),
         llm_model_name: Set(Some(decision.config.model.clone())),
+        // 多维字段一次写
+        platform: Set(platform_str.clone()),
+        template_name: Set(template_name_for_db),
+        platforms: Set(vec![platform_str.clone()]),
+        tech_stacks: Set(tech_stacks_arr.clone()),
+        ui_libs: Set(ui_libs_arr.clone()),
+        selected_skill_buckets: Set(explicit_buckets_arr.clone()),
         ..Default::default()
     };
 
@@ -141,11 +232,37 @@ pub async fn create_task(
     let task_id = saved.id;
     let task_id_str = format!("task-{}", task_id);
 
-    // 2. 拉起 sandbox
+    // 2026-04-25 任务追踪日志：初始化归档目录（mode=disabled 时是 no-op）
+    let _ = crate::services::tracelog::init_task_tracelog(&state, task_id).await;
+
+    // 2026-04 性能优化：sandbox 创建 与 RAG 检索并发跑（两者互不依赖）。
+    //   - RAG 在这里 spawn 后立刻开始做空库检查/embedding 调用
+    //   - 本线程接着 await sandbox 创建；sandbox 返回 workdir 后再做 scaffold 复制
+    //   - 最终在拼 claw_req 前 `rag_fut.await` 收结果
+    //   典型收益：sandbox 1–5s 与 RAG 0.5–3s 重叠，尾延迟压缩 0.5–3s。
+    let rag_fut = tokio::spawn(fetch_rag_extra_sections(
+        state.clone(),
+        task_id,
+        platform_str.clone(),
+        tech_stacks_arr.clone(),
+        ui_libs_arr.clone(),
+        tech_stack.clone(),
+        payload.amis_json.clone(),
+    ));
+
+    // 2. 拉起 sandbox（2026-04：把 template 的 dev_command 一起下发给 sandbox）
     let sandbox = SandboxClient::new(state.http_client.clone(), state.sandbox_url.clone());
-    let sandbox_info = match sandbox.create(&task_id_str).await {
+    let dev_command_for_sandbox: Option<String> = template_name
+        .as_deref()
+        .and_then(|n| state.template_registry.get(n))
+        .and_then(|t| t.dev_command.clone());
+    let sandbox_info = match sandbox
+        .create_with(&task_id_str, dev_command_for_sandbox)
+        .await
+    {
         Ok(s) => s,
         Err(e) => {
+            rag_fut.abort(); // sandbox 失败，RAG 没人用，避免孤儿 embedding 调用
             mark_task_failed(&state, task_id, &format!("sandbox 创建失败: {}", e)).await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -155,48 +272,133 @@ pub async fn create_task(
         }
     };
 
-    // 2.5 把脚手架种子项目 copy 到工作目录（Agent 开始工作时就有素材）
-    match copy_scaffold_to_workdir(&tech_stack, &sandbox_info.workdir).await {
-        Ok(_) => {
-            // 事件：底座复制完成（前端 Onboarding 进度条消费此信号）
-            // payload 里带 type 字段，前端 history 回放时能直接识别
-            let _ = project_task_event::ActiveModel {
-                task_id: Set(task_id),
-                event_type: Set("scaffold_copied".to_owned()),
-                payload: Set(
-                    json!({ "type": "scaffold_copied", "data": { "tech_stack": tech_stack } })
-                        .to_string(),
-                ),
-                created_at: Set(chrono::Local::now().naive_local()),
-                ..Default::default()
+    // 2.5 按 template_name 处理底座复制：
+    //     - __blank__ / None → 跳过，让 Agent 从零搭建（触发 scaffold_skipped_blank 事件）
+    //     - 其他 → 从 registry 查 dir，找不到 dir 时退回 {tech_stack}-template 兼容路径
+    let tpl_spec = template_name
+        .as_deref()
+        .and_then(|n| state.template_registry.get(n));
+    let should_copy = !matches!(template_name.as_deref(), Some("__blank__") | None);
+    let scaffold_dir_name: Option<String> = if should_copy {
+        tpl_spec
+            .and_then(|t| t.dir.clone())
+            .or_else(|| template_name.clone()) // fallback：把 template_name 当目录名用
+    } else {
+        None
+    };
+
+    // 2026-04 性能优化：scaffold 事件 INSERT 后台化（纯审计，前端轮询/SSE 能容忍 100ms 延后）
+    if let Some(dir_name) = scaffold_dir_name.as_deref() {
+        let copy_result = copy_scaffold_to_workdir(dir_name, &sandbox_info.workdir).await;
+        let db_bg = state.db.clone();
+        let tech_stack_bg = tech_stack.clone();
+        let template_name_bg = template_name.clone();
+        let dir_name_bg = dir_name.to_string();
+        match copy_result {
+            Ok(_) => {
+                tokio::spawn(async move {
+                    let _ = project_task_event::ActiveModel {
+                        task_id: Set(task_id),
+                        event_type: Set("scaffold_copied".to_owned()),
+                        payload: Set(
+                            json!({
+                                "type": "scaffold_copied",
+                                "data": {
+                                    "tech_stack": tech_stack_bg,
+                                    "template_name": template_name_bg,
+                                    "scaffold_dir": dir_name_bg
+                                }
+                            })
+                            .to_string(),
+                        ),
+                        created_at: Set(chrono::Local::now().naive_local()),
+                        ..Default::default()
+                    }
+                    .insert(&db_bg)
+                    .await;
+                });
             }
-            .insert(&state.db)
-            .await;
+            Err(e) => {
+                tracing::warn!("copy 种子项目失败（Agent 将从空目录开始）: {}", e);
+                let err_text = format!("{}", e);
+                tokio::spawn(async move {
+                    let _ = project_task_event::ActiveModel {
+                        task_id: Set(task_id),
+                        event_type: Set("scaffold_copy_failed".to_owned()),
+                        payload: Set(
+                            json!({
+                                "type": "scaffold_copy_failed",
+                                "data": {
+                                    "tech_stack": tech_stack_bg,
+                                    "template_name": template_name_bg,
+                                    "error": err_text
+                                }
+                            })
+                            .to_string(),
+                        ),
+                        created_at: Set(chrono::Local::now().naive_local()),
+                        ..Default::default()
+                    }
+                    .insert(&db_bg)
+                    .await;
+                });
+            }
         }
-        Err(e) => {
-            tracing::warn!("copy 种子项目失败（Agent 将从空目录开始）: {}", e);
+    } else {
+        // 从零搭建：工作目录保持空，只记事件
+        let db_bg = state.db.clone();
+        let tech_stack_bg = tech_stack.clone();
+        tokio::spawn(async move {
             let _ = project_task_event::ActiveModel {
                 task_id: Set(task_id),
-                event_type: Set("scaffold_copy_failed".to_owned()),
+                event_type: Set("scaffold_skipped_blank".to_owned()),
                 payload: Set(
                     json!({
-                        "type": "scaffold_copy_failed",
-                        "data": { "tech_stack": tech_stack, "error": format!("{}", e) }
+                        "type": "scaffold_skipped_blank",
+                        "data": {
+                            "tech_stack": tech_stack_bg,
+                            "reason": "template_name == __blank__ → 从零搭建"
+                        }
                     })
                     .to_string(),
                 ),
                 created_at: Set(chrono::Local::now().naive_local()),
                 ..Default::default()
             }
-            .insert(&state.db)
+            .insert(&db_bg)
             .await;
-        }
+        });
     }
 
-    // B.5：先做 RAG 检索，把同栈 Top-K 已审核样例拼成额外 system_prompt 段。
-    // 失败/没数据 → 返回空 vec，不阻断任务创建。
-    let extra_system_sections =
-        fetch_rag_extra_sections(&state, &tech_stack, &payload.amis_json).await;
+    // B.5：RAG 检索已在本函数开头 spawn，这里收结果
+    // 失败/没数据/超时 → 返回空 vec，不阻断任务创建
+    let extra_system_sections = match rag_fut.await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("RAG spawn 任务 join 失败: {} （按空样例继续）", e);
+            Vec::new()
+        }
+    };
+
+    // 2.7【2026-04-25 amis-translator 优先（实验功能）】
+    // 用户在 UI 显式勾选「启用翻译器」时才走这条路径；默认 false → 主线 LLM 流水线不变。
+    // 详见 docs/architecture/amis-translator-pipeline.md。
+    if payload.enable_translator.unwrap_or(false) {
+        if let Some(resp) = try_translate_amis(
+            &state,
+            task_id,
+            &sandbox,
+            &sandbox_info,
+            &payload.amis_json,
+            &tech_stack,
+            &platform_str,
+            &ui_libs_arr,
+        )
+        .await
+        {
+            return resp;
+        }
+    }
 
     // 3. 调 claw-agent-server 创建会话
     let claw = ClawAgentClient::new(state.http_client.clone(), state.claw_agent_url.clone());
@@ -209,6 +411,19 @@ pub async fn create_task(
         initial_message,
         model: Some(llm_config.model.clone()),
         tech_stack: Some(tech_stack.clone()),
+        // 2026-04 多维透传
+        platform: Some(platform_str.clone()),
+        tech_stacks: Some(tech_stacks_arr.clone()),
+        ui_libs: Some(ui_libs_arr.clone()),
+        template_name: match template_name.as_deref() {
+            Some("__blank__") => None,
+            other => other.map(|s| s.to_string()),
+        },
+        explicit_buckets: if explicit_buckets_arr.is_empty() {
+            None
+        } else {
+            Some(explicit_buckets_arr.clone())
+        },
         llm_config: Some(llm_config),
         permission_config: payload.permission_config.clone(),
         extra_system_sections: if extra_system_sections.is_empty() {
@@ -259,36 +474,49 @@ pub async fn create_task(
         claw_resp.id.clone(),
     );
 
-    // 5. 写入初始消息
-    let _ = project_task_message::ActiveModel {
-        task_id: Set(task_id),
-        role: Set("user".to_owned()),
-        content: Set(payload.amis_json),
-        created_at: Set(chrono::Local::now().naive_local()),
-        ..Default::default()
+    // 5. 写入初始消息 —— 2026-04 性能：扔后台，不阻塞响应
+    //    前端刚 POST 201 就订阅 /events 也能最终看到这条消息（~几 ms 延后）
+    {
+        let db_bg = state.db.clone();
+        let amis_json_bg = payload.amis_json;
+        tokio::spawn(async move {
+            let _ = project_task_message::ActiveModel {
+                task_id: Set(task_id),
+                role: Set("user".to_owned()),
+                content: Set(amis_json_bg),
+                created_at: Set(chrono::Local::now().naive_local()),
+                ..Default::default()
+            }
+            .insert(&db_bg)
+            .await;
+        });
     }
-    .insert(&state.db)
-    .await;
 
-    // 5.5 审计事件：记录本次任务的 LLM 决策，供事件流/未来的 auto 算法回溯
-    let _ = project_task_event::ActiveModel {
-        task_id: Set(task_id),
-        event_type: Set("llm_selected".to_owned()),
-        payload: Set(json!({
-            "mode": decision.mode,
-            "provider_id": decision.provider_id,
-            "provider_name": decision.provider_name,
-            "model": decision.config.model,
-            "protocol": decision.config.protocol,
-            "capability_tier": decision.capability_tier,
-            "complexity_score": decision.complexity_score,
-            "reason": decision.reason,
-        }).to_string()),
-        created_at: Set(chrono::Local::now().naive_local()),
-        ..Default::default()
+    // 5.5 审计事件：记录本次任务的 LLM 决策；同样扔后台
+    {
+        let db_bg = state.db.clone();
+        let decision_bg = decision;
+        tokio::spawn(async move {
+            let _ = project_task_event::ActiveModel {
+                task_id: Set(task_id),
+                event_type: Set("llm_selected".to_owned()),
+                payload: Set(json!({
+                    "mode": decision_bg.mode,
+                    "provider_id": decision_bg.provider_id,
+                    "provider_name": decision_bg.provider_name,
+                    "model": decision_bg.config.model,
+                    "protocol": decision_bg.config.protocol,
+                    "capability_tier": decision_bg.capability_tier,
+                    "complexity_score": decision_bg.complexity_score,
+                    "reason": decision_bg.reason,
+                }).to_string()),
+                created_at: Set(chrono::Local::now().naive_local()),
+                ..Default::default()
+            }
+            .insert(&db_bg)
+            .await;
+        });
     }
-    .insert(&state.db)
-    .await;
 
     (
         StatusCode::CREATED,
@@ -464,9 +692,12 @@ pub async fn stop_task(
     }
 
     let mut active: project_generation_task::ActiveModel = task.into();
+    let stopped_id = active.id.clone().unwrap();
     active.status = Set("stopped".to_owned());
     active.updated_at = Set(chrono::Local::now().naive_local());
     let _ = active.update(&state.db).await;
+
+    crate::services::tracelog::finalize_task_tracelog(&state, stopped_id, "stopped").await;
 
     Json(json!({"status": "stopped"})).into_response()
 }
@@ -491,7 +722,8 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
         let mut last_handled_failure: Option<String> = None;
         let mut seen_starting: bool = false;
         let mut last_handled_runtime_error: Option<String> = None;
-        let mut marked_succeeded_once: bool = false;
+        // workdir_unchanged 防御只触发一次（避免 dev 一直 ready 时反复改 status / 反复发事件）
+        let mut marked_workdir_unchanged_failed: bool = false;
 
         const MAX_FIX_ATTEMPTS: i32 = 5;
         const MAX_POLLS: usize = 600; // 30 分钟
@@ -517,23 +749,105 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
             }
 
             if dev_status.get("ready").is_some() {
-                // 首次进入 Ready：把 task 标记为 succeeded；但不退出循环，继续监听 runtime_error
-                if !marked_succeeded_once {
-                    if let Ok(Some(task)) = project_generation_task::Entity::find_by_id(task_id)
-                        .one(&state.db)
-                        .await
-                    {
-                        if task.status != "stopped" && task.status != "failed" {
-                            let mut active: project_generation_task::ActiveModel = task.into();
-                            active.status = Set("succeeded".to_string());
-                            active.updated_at = Set(chrono::Local::now().naive_local());
-                            let _ = active.update(&state.db).await;
-                            tracing::info!("task {} dev ready → succeeded (continuing to watch runtime errors)", task_id);
-                        } else {
-                            return;
+                // 每次 ready 都从 DB 拉最新状态判断，不再依赖内存里的 marked_succeeded_once。
+                // 这样可以处理"用户手动喂日志救场后 dev 重新 ready"的复活场景。
+                let Ok(Some(task)) = project_generation_task::Entity::find_by_id(task_id)
+                    .one(&state.db)
+                    .await
+                else {
+                    continue;
+                };
+                if task.status == "stopped" {
+                    return;
+                }
+                if task.status == "succeeded" {
+                    // 已经是 succeeded，dev 持续 ready，啥也不做（继续监听 runtime_error）
+                    continue;
+                }
+
+                // task #100 防御（仅触发一次）：dev ready ≠ "LLM 真的写过业务代码"。
+                // 若 workdir 一字未改（典型 task #100：write_file 全部越界没落地、
+                // 但 dev server 起来跑的还是脚手架原版），降级为 failed，避免误标成功。
+                if !marked_workdir_unchanged_failed {
+                    let workdir_has_changes = task
+                        .workdir_path
+                        .as_deref()
+                        .map(|wd| workdir_changed_since_task_start(wd, task.created_at))
+                        .unwrap_or(true);
+
+                    if !workdir_has_changes {
+                        let fix_attempts_local = task.fix_attempts;
+                        tracing::warn!(
+                            "task {} dev ready but workdir unchanged since task start → \
+                             marking failed (likely path-rejected writes)",
+                            task_id
+                        );
+                        let mut active: project_generation_task::ActiveModel = task.into();
+                        active.status = Set("failed".to_string());
+                        active.updated_at = Set(chrono::Local::now().naive_local());
+                        let _ = active.update(&state.db).await;
+
+                        let _ = project_task_event::ActiveModel {
+                            task_id: Set(task_id),
+                            event_type: Set("workdir_unchanged_rejected".to_owned()),
+                            payload: Set(serde_json::json!({
+                                "type": "workdir_unchanged_rejected",
+                                "data": {
+                                    "reason": "Vite dev server 已 ready，但工作目录里没有任何文件\
+                                              在本任务期间被新建/修改。可能 LLM 的所有 write_file 都\
+                                              被路径校验拦截了，或写到了 workdir 之外。",
+                                    "fix_attempts": fix_attempts_local
+                                }
+                            }).to_string()),
+                            created_at: Set(chrono::Local::now().naive_local()),
+                            ..Default::default()
                         }
+                        .insert(&state.db)
+                        .await;
+
+                        crate::services::tracelog::finalize_task_tracelog(
+                            &state, task_id, "failed",
+                        )
+                        .await;
+                        marked_workdir_unchanged_failed = true;
+                        // 不 return：watcher 继续监听，等用户手动救场后下次 ready 时复活
+                        continue;
                     }
-                    marked_succeeded_once = true;
+                }
+
+                // 走到这里：task.status 是 running / failed / waiting_user 等非终结/非 succeeded 态，
+                // 且 dev 真的 ready 了 → 切 succeeded（包括从 failed 复活的情况）。
+                let prev_status = task.status.clone();
+                let mut active: project_generation_task::ActiveModel = task.into();
+                active.status = Set("succeeded".to_string());
+                active.updated_at = Set(chrono::Local::now().naive_local());
+                let _ = active.update(&state.db).await;
+
+                // 落 status_change 事件，让前端 history REST 能看到状态切换
+                let _ = project_task_event::ActiveModel {
+                    task_id: Set(task_id),
+                    event_type: Set("status_change".to_owned()),
+                    payload: Set(serde_json::json!({
+                        "type": "status_change",
+                        "data": "succeeded",
+                        "from": prev_status,
+                    }).to_string()),
+                    created_at: Set(chrono::Local::now().naive_local()),
+                    ..Default::default()
+                }
+                .insert(&state.db)
+                .await;
+
+                if prev_status == "failed" {
+                    tracing::info!(
+                        "task {} dev re-ready after manual rescue → succeeded (revived from failed)",
+                        task_id
+                    );
+                } else {
+                    tracing::info!(
+                        "task {} dev ready → succeeded (continuing to watch runtime errors)",
+                        task_id
+                    );
                 }
                 continue;
             }
@@ -554,10 +868,16 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                     .one(&state.db)
                     .await
                 else {
-                    return;
+                    continue;
                 };
-                if task.status == "stopped" || task.status == "failed" {
+                if task.status == "stopped" {
                     return;
+                }
+                if task.status == "failed" {
+                    // 已经放弃过自动修（fix_attempts 满），等用户/admin 手动救场。
+                    // 救场成功后 dev 重新 ready 会让 ready 分支把 status 从 failed 复活到 succeeded。
+                    last_handled_runtime_error = Some(reason);
+                    continue;
                 }
 
                 let attempts = task.fix_attempts;
@@ -567,11 +887,14 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                     active.updated_at = Set(chrono::Local::now().naive_local());
                     let _ = active.update(&state.db).await;
                     tracing::warn!(
-                        "task {} runtime-error reached max fix attempts ({}), giving up",
+                        "task {} runtime-error reached max fix attempts ({}), giving up auto-fix \
+                         (watcher continues; user/admin can rescue manually → revives on next ready)",
                         task_id,
                         MAX_FIX_ATTEMPTS
                     );
-                    return;
+                    crate::services::tracelog::finalize_task_tracelog(&state, task_id, "failed").await;
+                    last_handled_runtime_error = Some(reason);
+                    continue; // 不 return：watcher 继续监听，留给用户手动救场
                 }
 
                 // 从 rt_obj.logs 拿最近日志
@@ -622,12 +945,12 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                 }
 
                 // task.status 从 succeeded 降级回 running（表示"还在修"），fix_attempts++
+                // ready 分支会在 dev 重新 ready 时再把 status 切回 succeeded（基于 DB 读取，无需内存标志）
                 let mut active: project_generation_task::ActiveModel = task.into();
                 active.status = Set("running".to_string());
                 active.fix_attempts = Set(attempts + 1);
                 active.updated_at = Set(chrono::Local::now().naive_local());
                 let _ = active.update(&state.db).await;
-                marked_succeeded_once = false; // 允许修复成功后重新标记 succeeded
 
                 let _ = project_task_message::ActiveModel {
                     task_id: Set(task_id),
@@ -660,25 +983,33 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                     .one(&state.db)
                     .await
                 else {
-                    return;
+                    continue;
                 };
-                if task.status == "stopped" || task.status == "failed" {
+                if task.status == "stopped" {
                     return;
+                }
+                if task.status == "failed" {
+                    // 已经放弃过自动修，等手动救场（同 runtime_error 分支语义）
+                    last_handled_failure = Some(reason);
+                    continue;
                 }
 
                 let attempts = task.fix_attempts;
                 if attempts >= MAX_FIX_ATTEMPTS {
-                    // 到达上限：标记为 failed
+                    // 到达上限：标记为 failed，但 watcher 不退出，留给用户手动救场
                     let mut active: project_generation_task::ActiveModel = task.into();
                     active.status = Set("failed".to_string());
                     active.updated_at = Set(chrono::Local::now().naive_local());
                     let _ = active.update(&state.db).await;
                     tracing::warn!(
-                        "task {} reached max fix attempts ({}), giving up",
+                        "task {} reached max fix attempts ({}), giving up auto-fix \
+                         (watcher continues; user/admin can rescue manually → revives on next ready)",
                         task_id,
                         MAX_FIX_ATTEMPTS
                     );
-                    return;
+                    crate::services::tracelog::finalize_task_tracelog(&state, task_id, "failed").await;
+                    last_handled_failure = Some(reason);
+                    continue;
                 }
 
                 // 构造修复提示消息：带上失败原因 + 最近日志
@@ -752,21 +1083,138 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
         }
 
         tracing::info!("task {} dev_status watcher timeout (30 min)", task_id);
+
+        // watcher 自然结束（30 分钟到 / 任务一直 Ready 没出错）→ 用当前 DB 状态 finalize tracelog
+        let final_status = project_generation_task::Entity::find_by_id(task_id)
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .map(|t| t.status)
+            .unwrap_or_else(|| "succeeded".to_string());
+        crate::services::tracelog::finalize_task_tracelog(&state, task_id, &final_status).await;
     });
 }
 
-/// 把指定 tech_stack 的脚手架种子项目复制到 workdir（让 Agent 启动时有素材可改）
-async fn copy_scaffold_to_workdir(tech_stack: &str, workdir: &str) -> anyhow::Result<()> {
+/// task #100 防御：判断 task workdir 在本任务期间是否真的发生过变更。
+///
+/// 判定法：扫描 workdir 子树（跳 node_modules / .git / dist 等大目录），
+/// 任意文件的 mtime > task.created_at + 5s buffer 即视为"有改动"。
+///
+/// 为什么这条判定可靠：
+/// - 脚手架是 `rsync -a` / `cp -r` 复制的，源文件 mtime 被保留（远早于任务创建时间）；
+/// - LLM 通过 write_file / edit_file 写入的文件 mtime 必然 > 任务创建时间；
+/// - "workdir 内 mtime 全部 ≤ task.created_at + buffer" 等价于 "LLM 一行业务代码都没改"。
+///
+/// 异常路径（IO 失败、时间戳负值、workdir 不存在）一律保守返回 true（放行），
+/// 避免误把合法任务降级。
+fn workdir_changed_since_task_start(
+    workdir: &str,
+    task_created_at: chrono::NaiveDateTime,
+) -> bool {
+    use chrono::TimeZone;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    // task.created_at 的写入方式是 `chrono::Local::now().naive_local()`（本地时间，无时区信息），
+    // 这里必须把它按本地时区还原回 UTC timestamp 再跟文件 mtime 比对。
+    // 早期版本误用 `.and_utc().timestamp()`（把 naive 当 UTC），在 GMT+8 之类的环境下会比真实
+    // 创建时间早 8 小时——`since` 直接跑到任务创建后好几小时去了，所有文件 mtime 全部小于它，
+    // 防御逻辑就把合法任务误判成 "workdir 一字未改" 标 failed（task 102 实锤）。
+    let secs = chrono::Local
+        .from_local_datetime(&task_created_at)
+        .single()
+        .map(|dt| dt.timestamp())
+        // 夏令时切换瞬间会出现 single()=None；保守 fallback 到 UTC 解读，
+        // 比错判 failed 强（仅一次 LocalResult::Ambiguous 的边界情况）。
+        .unwrap_or_else(|| task_created_at.and_utc().timestamp());
+    if secs < 0 {
+        return true;
+    }
+    let since: SystemTime = UNIX_EPOCH + Duration::from_secs(secs as u64) + Duration::from_secs(5);
+
+    let mut saw_recent = false;
+    for entry in walkdir::WalkDir::new(workdir)
+        .max_depth(8)
+        .into_iter()
+        .filter_entry(|e| {
+            !matches!(
+                e.file_name().to_str(),
+                Some("node_modules") | Some(".git") | Some("dist") | Some(".uniapp")
+            )
+        })
+        .filter_map(|e| e.ok())
+        .take(20_000)
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(mtime) = meta.modified() else { continue };
+        if mtime > since {
+            saw_recent = true;
+            break;
+        }
+    }
+
+    // 扫不到任何 entry（workdir 不存在 / 权限问题）→ 保守放行
+    if !saw_recent
+        && walkdir::WalkDir::new(workdir)
+            .max_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .next()
+            .is_none()
+    {
+        return true;
+    }
+
+    saw_recent
+}
+
+/// 把指定模板目录的脚手架种子项目复制到 workdir（让 Agent 启动时有素材可改）。
+///
+/// `dir_name` 是 `scaffolds/` 下的子目录名（来自 `template_registry.dir` 或旧路径 `{tech_stack}-template`）。
+///
+/// 2026-04 性能优化：
+///   - 优先用 rsync --exclude=node_modules/.git/...，对 212MB 的 uniapp-wot-h5-template 只拷 ~2MB；
+///   - 缺 rsync 或失败时兜底到原 `cp -r && rm -rf`（旧逻辑不变，保证可用性）。
+async fn copy_scaffold_to_workdir(dir_name: &str, workdir: &str) -> anyhow::Result<()> {
     let scaffold_root = std::env::var("SCAFFOLD_ROOT")
         .unwrap_or_else(|_| "/home/karl/Working/TianXing/amis-ai/scaffolds".to_string());
-    let source = format!("{}/{}-template", scaffold_root, tech_stack);
+    let source = format!("{}/{}", scaffold_root, dir_name);
 
     if !std::path::Path::new(&source).exists() {
         return Err(anyhow::anyhow!("scaffold not found: {}", source));
     }
 
-    // 用 cp -r 把种子项目内容（不含 node_modules）复制到 workdir
-    // 排除 node_modules / .git（体积大且没用）
+    // 1) rsync 优先路径（源尾部必须带 `/`，等价于 `cp -r {src}/.`）
+    //    --exclude 把常见的大目录和构建产物全部挡在外面，避免先拷后删的浪费
+    let rsync_cmd = format!(
+        "rsync -a \
+         --exclude=node_modules --exclude=.git --exclude=.turbo \
+         --exclude=dist --exclude=.next --exclude=coverage --exclude=.cache \
+         {}/ {}/",
+        source, workdir
+    );
+    let rsync_out = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&rsync_cmd)
+        .output()
+        .await;
+    if let Ok(o) = &rsync_out {
+        if o.status.success() {
+            tracing::info!("scaffold rsync -> {}", workdir);
+            return Ok(());
+        }
+    }
+    tracing::warn!(
+        "rsync 不可用或失败（{:?}），回退到 cp -r && rm -rf node_modules 兜底路径",
+        rsync_out
+            .as_ref()
+            .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
+            .unwrap_or_else(|e| format!("{e}"))
+    );
+
+    // 2) 兜底：cp -r 先全量拷贝再删 node_modules/.git（慢但稳）
     let output = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(format!(
@@ -782,7 +1230,7 @@ async fn copy_scaffold_to_workdir(tech_stack: &str, workdir: &str) -> anyhow::Re
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    tracing::info!("scaffold copied to {}", workdir);
+    tracing::info!("scaffold copied (cp fallback) to {}", workdir);
     Ok(())
 }
 
@@ -818,8 +1266,211 @@ fn preview_to_json(d: &LlmDecision) -> Json<serde_json::Value> {
     }))
 }
 
+/// 2026-04-25：尝试用 amis-translator 跳过 LLM。
+///
+/// 详见 docs/architecture/amis-translator-pipeline.md。
+///
+/// 返回：
+/// - `Some(response)` —— 翻译器 fully_supported，已写文件 + dev_start，调用方应**直接**返回此响应
+/// - `None` —— 翻译器降级 / 失败 / 跳过，调用方应继续走原 claw-agent 流水线（fall through）
+///
+/// 副作用：
+/// - 成功时落 `translation_succeeded` 事件 + 更新 task 表（status=running, claw_session_id 留空）
+/// - 不支持时落 `translation_unsupported` 事件
+/// - 失败时仅打 warn 日志（不污染事件流）
+#[allow(clippy::too_many_arguments)]
+async fn try_translate_amis(
+    state: &AppState,
+    task_id: i32,
+    sandbox: &SandboxClient,
+    sandbox_info: &crate::services::sandbox_client::SandboxInfo,
+    amis_json_str: &str,
+    tech_stack: &str,
+    platform_str: &str,
+    ui_libs_arr: &[String],
+) -> Option<axum::response::Response> {
+    if amis_json_str.trim().is_empty() {
+        return None;
+    }
+    let parsed_amis: serde_json::Value = match serde_json::from_str(amis_json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                "Task {}：amis_json 解析失败，跳过翻译器：{}",
+                task_id,
+                e
+            );
+            return None;
+        }
+    };
+
+    let agent_url = std::env::var("AGENT_URL")
+        .unwrap_or_else(|_| "http://localhost:8000".to_string());
+    let internal_key = std::env::var("INTERNAL_API_KEY").unwrap_or_default();
+
+    let ui_lib = ui_libs_arr.first().cloned().unwrap_or_else(|| "wot".to_string());
+
+    // 读沙箱当前 src/pages.json（脚手架已拷贝）—— 失败容忍
+    let current_pages_json = sandbox
+        .fs_read(&sandbox_info.id, "src/pages.json")
+        .await
+        .ok()
+        .and_then(|v| {
+            v.get("content")
+                .and_then(|c| c.as_str())
+                .map(String::from)
+        })
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+
+    let req = crate::services::amis_translator_client::TranslateRequest {
+        amis_json: parsed_amis,
+        ui_lib: &ui_lib,
+        tech_stack,
+        platform: platform_str,
+        current_pages_json,
+    };
+
+    let response = match crate::services::amis_translator_client::translate(
+        &state.http_client,
+        &agent_url,
+        &internal_key,
+        &req,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(
+                "Task {}：调 amis-translator 失败（回退 LLM）: {}",
+                task_id,
+                e
+            );
+            return None;
+        }
+    };
+
+    if !response.fully_supported {
+        tracing::info!(
+            "Task {}：amis-translator 部分支持/不支持，回退 LLM。unsupported={:?}",
+            task_id,
+            response.unsupported_types
+        );
+        let db_bg = state.db.clone();
+        let unsupported = response.unsupported_types.clone();
+        let notes = response.notes.clone();
+        tokio::spawn(async move {
+            let _ = project_task_event::ActiveModel {
+                task_id: Set(task_id),
+                event_type: Set("translation_unsupported".to_owned()),
+                payload: Set(json!({
+                    "type": "translation_unsupported",
+                    "data": {"unsupported_types": unsupported, "notes": notes}
+                })
+                .to_string()),
+                created_at: Set(chrono::Local::now().naive_local()),
+                ..Default::default()
+            }
+            .insert(&db_bg)
+            .await;
+        });
+        return None;
+    }
+
+    // fully_supported：写所有文件 + dev_start
+    tracing::info!(
+        "Task {}：amis-translator fully_supported，跳过 LLM。{} 个文件",
+        task_id,
+        response.files.len()
+    );
+    for (path, content) in &response.files {
+        let body = serde_json::json!({
+            "path": path,
+            "content": content,
+            "base_mtime": 0
+        });
+        if let Err(e) = sandbox.fs_write(&sandbox_info.id, &body).await {
+            tracing::warn!(
+                "Task {}：amis-translator 写沙箱失败 path={}：{}（回退 LLM）",
+                task_id,
+                path,
+                e
+            );
+            return None;
+        }
+    }
+
+    if let Err(e) = sandbox.dev_start(&sandbox_info.id).await {
+        tracing::warn!(
+            "Task {}：amis-translator dev_start 失败：{}（前端可手动重试）",
+            task_id,
+            e
+        );
+    }
+
+    // 落事件 translation_succeeded（异步）
+    let files_list: Vec<String> = response.files.keys().cloned().collect();
+    {
+        let db_bg = state.db.clone();
+        let files_bg = files_list.clone();
+        let notes = response.notes.clone();
+        tokio::spawn(async move {
+            let _ = project_task_event::ActiveModel {
+                task_id: Set(task_id),
+                event_type: Set("translation_succeeded".to_owned()),
+                payload: Set(json!({
+                    "type": "translation_succeeded",
+                    "data": {"files": files_bg, "notes": notes}
+                })
+                .to_string()),
+                created_at: Set(chrono::Local::now().naive_local()),
+                ..Default::default()
+            }
+            .insert(&db_bg)
+            .await;
+        });
+    }
+
+    // 更新 task 表（status=running，落沙箱信息；claw_session_id 留 None 表示无 LLM 会话）
+    let active = project_generation_task::ActiveModel {
+        id: Set(task_id),
+        sandbox_id: Set(Some(sandbox_info.id.clone())),
+        preview_port: Set(Some(sandbox_info.preview_port as i32)),
+        workdir_path: Set(Some(sandbox_info.workdir.clone())),
+        status: Set("running".to_owned()),
+        updated_at: Set(chrono::Local::now().naive_local()),
+        ..Default::default()
+    };
+    if let Err(e) = active.update(&state.db).await {
+        tracing::error!(
+            "Task {}：amis-translator 路径更新 task 失败：{}",
+            task_id,
+            e
+        );
+    }
+
+    Some(
+        (
+            StatusCode::CREATED,
+            Json(json!({
+                "id": task_id,
+                "status": "running",
+                "sandbox_id": sandbox_info.id,
+                "preview_port": sandbox_info.preview_port,
+                "claw_session_id": serde_json::Value::Null,
+                "translator": {
+                    "fully_supported": true,
+                    "files": files_list
+                }
+            })),
+        )
+            .into_response(),
+    )
+}
+
 async fn mark_task_failed(state: &AppState, task_id: i32, reason: &str) {
     tracing::error!("任务 {} 失败: {}", task_id, reason);
+
+    crate::services::tracelog::finalize_task_tracelog(state, task_id, "failed").await;
 
     if let Ok(Some(task)) = project_generation_task::Entity::find_by_id(task_id)
         .one(&state.db)
@@ -844,24 +1495,46 @@ async fn mark_task_failed(state: &AppState, task_id: i32, reason: &str) {
 
 fn build_initial_prompt(amis_json: &str, extra: Option<&str>) -> String {
     let base = format!(
-        "请根据以下 Amis JSON 生成 UniApp + Wot UI H5 项目的**业务页面代码**。\n\n\
-        ⚠️ **工作目录已预置了完整的种子项目**（package.json / pnpm-lock.yaml / vite.config.ts / tsconfig.json / \
-        .npmrc / index.html / src/App.vue / src/main.ts / src/pages.json 等都已就绪）。\n\
-        你只能**新增或修改** `src/pages/**`、`src/api/**`、`src/components/**`、`src/utils/**` 和 `src/pages.json`。\n\
-        ❌ 严禁重新创建或修改底座文件（package.json / vite.config.ts / tsconfig.json / .npmrc / src/main.ts / src/App.vue）——\
-        这些文件已被锁定，write_file / edit_file 会被拒绝。\n\
-        ❌ 严禁 `import \"wot-design-uni/index.css\"` 或任何第三方库的 CSS——Wot UI 样式由 easycom 自动注入。\n\n\
-        📂 **路径规则（极其重要，踩错必报权限错误）**：\n\
-        - `bash` 工具在**容器内**执行，使用容器路径 `/workspace/...`，例如 `bash: ls /workspace/src`\n\
-        - `write_file` / `edit_file` / `read_file` / `glob_search` / `grep_search` 工具在**宿主机**执行，请一律用**相对路径**，例如 `src/pages/foo/foo.vue`\n\
-        - ❌ 不要给文件工具传 `/workspace/src/...` 或 `/var/amis-ai/workdirs/...` 这类绝对路径\n\
-        - ✅ 正确示例：`write_file path=\"src/pages/user/user.vue\"` 或 `read_file path=\"src/pages.json\"`\n\n\
-        推荐步骤：\n\
-        1. 先 `bash: ls -la /workspace` 和 `bash: cat /workspace/src/pages.json` 核对种子项目当前状态\n\
-        2. 分析 Amis JSON 的页面结构，规划要新增的页面 .vue 文件\n\
-        3. `write_file` 创建 `src/pages/{{name}}/{{name}}.vue`（相对路径！）用 Wot UI 组件（wd-button / wd-form / wd-table 等）实现\n\
-        4. `edit_file` 更新 `src/pages.json`（相对路径！）注册新路由\n\
-        5. 所有页面完工后调用 `dev_start` 工具启动 Vite（不要 bash 里跑 `pnpm run dev:h5`）\n\n\
+        "请根据以下 Amis JSON 生成**可运行的项目代码**。具体工作流程、组件映射、路由注册等规则，\
+        请严格按 system_prompt 中注入的 Skills 桶（platform.* / stack.* / ui.*）的 SKILL.md 执行。\n\n\
+        ## 开局检查\n\
+        1. `bash: ls -la /workspace` 看工作目录（是否已有模板、package.json 是否存在）\n\
+        2. 若已有模板文件 → 按「有模板」流程增量开发，**倾向于**在 src/pages/ / src/components/ / src/api/ 等业务目录扩展\n\
+        3. 若为空目录 → 按 `scaffold-from-scratch` skill 指引从零搭建（创建 package.json + 构建配置 + 入口 + 首页）\n\n\
+        ## 依赖变更\n\
+        - 新增依赖用 `bash: pnpm add <pkg>`，而不是手写 package.json（pnpm 会处理版本兼容）\n\
+        - 移除依赖用 `bash: pnpm remove <pkg>`\n\
+        - 修改构建配置（vite.config / tsconfig / next.config）前**先 read_file 看当前内容**，再 edit_file 增量改\n\n\
+        ## 路径规则（极其重要 · task #100 实锤）\n\
+        - `bash` 工具在**容器内**执行，用容器路径 `/workspace/...`，例如 `bash: ls /workspace/src`\n\
+        - `write_file` / `edit_file` / `read_file` / `glob_search` / `grep_search` 在**宿主机**执行，一律用**相对路径**，例如 `src/pages/foo/index.vue`\n\
+        - ✅ 允许的路径形式（对文件工具）：\n\
+            * 相对路径（**首选**）：`src/pages/foo/index.vue` / `pages.json` / `vite.config.ts`\n\
+            * `/workspace/...` 前缀：会被自动映射到工作目录\n\
+        - ❌ **严禁**给文件工具传任何宿主机绝对路径：\n\
+            * `/tmp/workspace/...`（早期容器约定，已废弃，但 LLM 常凭旧记忆复用 → 写入会被**硬拒绝**）\n\
+            * `/tmp/...` `/home/...` `/etc/...` `/var/...` 等\n\
+        - 路径越界时 `write_file` / `edit_file` 会**直接报错**，错误信息会告诉你正确写法 —— 收到错误立刻改成相对路径重试，**不要无视错误继续 dev_start**。\n\
+        - ⚠️ task #100 复盘：曾经有 LLM 用 `/tmp/workspace/...` 写了 55 个文件，工具没拦住，文件落在宿主机 /tmp 里、dev server 跑的还是脚手架原版。本版本起这条路被堵死。\n\n\
+        ## 错误恢复（必读）\n\
+        当 write_file / edit_file / dev_start 返回错误时，**禁止忽略错误硬往下走**。常见错误与对应动作：\n\
+        \n\
+        **A. ❌ 路径越界（write/edit 报 `路径越界` 字样）**\n\
+            → 把 `path` 改成**相对路径**（如 `src/pages/foo/index.vue`）或 `/workspace/...` 前缀，\
+              用**同样的 content** 立刻重新调一次 `write_file` / `edit_file`。\n\
+            → 不要尝试用 bash 写文件来「绕开」，bash 在容器里跑、文件不会进工作目录。\n\
+        \n\
+        **B. ❌ dev_start 前置检查失败（`工作目录里没有任何在本任务期间被新建/修改的文件`）**\n\
+            → 说明前面的 write_file 全被拦截了 / 你压根没调过 write_file。\n\
+            → 回看历史 tool_result，找到所有 `is_error: true` 的 write_file/edit_file，按 (A) 修路径重发；\
+              确认 workdir 真的有产物后再 `dev_start`。\n\
+        \n\
+        **C. ❌ 拒绝整覆盖底座关键文件（write_file 拒了 `src/main.ts` 等）**\n\
+            → 改用 `edit_file` 做精确局部替换，**保留**模板已有的拦截器/类型/接口。\n\
+        \n\
+        ## 启动验证\n\
+        - 代码就绪后调 `dev_start` 工具启动 dev server（命令由后端从 package.json scripts 推断）\n\
+        - 启动失败时读 `/tmp/vite.log` 或等价日志 → 定位 → 修复 → 再 `dev_start`（最多 5 次自修复）\n\n\
         Amis JSON:\n```json\n{}\n```",
         amis_json
     );
@@ -880,11 +1553,39 @@ fn build_initial_prompt(amis_json: &str, extra: Option<&str>) -> String {
 ///
 /// 失败/超时/没数据 → 返回空 vec，不阻断任务创建。
 /// 当前 top_k=3、only_approved=true、increment_hits=true（生产检索 → 累加 hit_count）。
+///
+/// 2026-04 性能优化：
+///   - 签名改为 owned 参数 + 传 `AppState`（派生 Clone，廉价），让 `tokio::spawn(...)` 可满足 `'static`，
+///     从而与 sandbox 创建并发跑；
+///   - 开头加廉价 DB 预检：`SELECT 1 FROM code_samples WHERE status='approved' LIMIT 1`。空库
+///     直接返回空 vec，跳过 Python embedding 调用（冷 Ollama 可省 5–15s）；
+///   - HTTP 超时从 15s 收紧到 3s——已有 fallback（失败返回空 vec 不阻断），最坏只是 RAG 缺失。
 async fn fetch_rag_extra_sections(
-    state: &crate::AppState,
-    tech_stack: &str,
-    amis_json: &str,
+    state: crate::AppState,
+    task_id: i32,
+    platform: String,
+    tech_stacks: Vec<String>,
+    ui_libs: Vec<String>,
+    legacy_tech_stack: String,
+    amis_json: String,
 ) -> Vec<String> {
+    // 空库快速跳过：避免对空 code_samples 表白白走 embedding + HTTP round-trip
+    use sea_orm::{ConnectionTrait, Statement};
+    let has_any = state
+        .db
+        .query_one(Statement::from_string(
+            state.db.get_database_backend(),
+            "SELECT 1 FROM code_samples WHERE status='approved' LIMIT 1".to_string(),
+        ))
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    if !has_any {
+        tracing::info!("RAG skip: code_samples 无 approved 样例，不调 embedding");
+        return Vec::new();
+    }
+
     let agent_url =
         std::env::var("AGENT_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
     let internal_key = std::env::var("INTERNAL_API_KEY").unwrap_or_default();
@@ -892,18 +1593,53 @@ async fn fetch_rag_extra_sections(
     // amis_json 太长会拖慢向量化；摘要用前 2KB 就够语义检索了
     let query_text: String = amis_json.chars().take(2000).collect();
 
+    // 读 rag.* 配置（硬过滤 + 软加权 knob）。读失败走 default，不阻断主流程。
+    use crate::handlers::system_settings::read_value_or;
+    let exclude_tags_raw = read_value_or(&state, "rag.quality_filter.exclude_tags", "").await;
+    let exclude_tags: Vec<String> = exclude_tags_raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let min_rating_raw = read_value_or(&state, "rag.quality_filter.min_rating", "").await;
+    let min_rating: Option<f32> = min_rating_raw.trim().parse().ok();
+    let min_verdict_raw = read_value_or(&state, "rag.quality_filter.min_verdict", "").await;
+    let min_verdict: Option<String> = if min_verdict_raw.trim().is_empty() {
+        None
+    } else {
+        Some(min_verdict_raw.trim().to_string())
+    };
+    let weighting_enabled = read_value_or(&state, "rag.weighting.enabled", "false")
+        .await
+        .trim()
+        .eq_ignore_ascii_case("true");
+    let thumbs_mode = read_value_or(&state, "rag.weighting.thumbs_mode", "tiebreaker").await;
+    let hit_count_enabled = read_value_or(&state, "rag.weighting.hit_count_enabled", "false")
+        .await
+        .trim()
+        .eq_ignore_ascii_case("true");
+
     let resp = match state
         .http_client
         .post(format!("{}/internal/search-code-samples", agent_url))
         .header("X-Internal-Key", &internal_key)
         .json(&json!({
-            "tech_stack": tech_stack,
+            "platforms": vec![&platform],
+            "tech_stacks": &tech_stacks,
+            "ui_libs": &ui_libs,
+            "tech_stack": &legacy_tech_stack,
             "query_text": query_text,
             "top_k": 3,
             "only_approved": true,
             "increment_hits": true,
+            "exclude_tags": &exclude_tags,
+            "min_rating": min_rating,
+            "min_verdict": min_verdict,
+            "weighting_enabled": weighting_enabled,
+            "thumbs_mode": thumbs_mode,
+            "hit_count_enabled": hit_count_enabled,
         }))
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(3))
         .send()
         .await
     {
@@ -930,8 +1666,8 @@ async fn fetch_rag_extra_sections(
         Some(a) if !a.is_empty() => a,
         _ => {
             tracing::info!(
-                "RAG search 命中 0 条 (tech_stack={}); system_prompt 不注入样例段",
-                tech_stack
+                "RAG search 命中 0 条 (legacy_stack={} tech_stacks={:?} ui_libs={:?}); system_prompt 不注入样例段",
+                legacy_tech_stack, tech_stacks, ui_libs
             );
             return Vec::new();
         }
@@ -992,11 +1728,145 @@ async fn fetch_rag_extra_sections(
         .filter_map(|r| r.get("id").and_then(|v| v.as_i64()))
         .collect();
     tracing::info!(
-        "RAG Top-{} hit (tech_stack={}): ids={:?}",
+        "RAG Top-{} hit (legacy_stack={} tech_stacks={:?} ui_libs={:?}): ids={:?}",
         results.len(),
-        tech_stack,
+        legacy_tech_stack,
+        tech_stacks,
+        ui_libs,
         ids
     );
+
+    // Phase 4 负例注入（默认 OFF，admin 启用 rag.negative.enabled=true 才生效）
+    let negative_enabled = read_value_or(&state, "rag.negative.enabled", "false")
+        .await
+        .trim()
+        .eq_ignore_ascii_case("true");
+    if negative_enabled {
+        let neg_top_k: i64 = read_value_or(&state, "rag.negative.top_k", "1")
+            .await
+            .trim()
+            .parse()
+            .unwrap_or(1);
+        // 总是 only_structural=true（评审建议硬编码，避 LLM negation blindness）
+        match state
+            .http_client
+            .post(format!("{}/internal/search-negative-samples", agent_url))
+            .header("X-Internal-Key", &internal_key)
+            .json(&json!({
+                "tech_stacks": &tech_stacks,
+                "platforms": vec![&platform],
+                "top_k": neg_top_k,
+                "only_structural": true,
+            }))
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {
+                if let Ok(body) = r.json::<serde_json::Value>().await {
+                    if let Some(neg_arr) = body.get("results").and_then(|v| v.as_array()) {
+                        if !neg_arr.is_empty() {
+                            buf.push_str("\n\n# ⚠️ 避免以下结构性反例\n\n");
+                            buf.push_str(
+                                "下面是历史上被管理员标记为**结构性反面教材**的几条摘要。\
+                                 生成代码时请主动避开这些错误结构；不要复现它们的组织方式。\n\n",
+                            );
+                            for (i, n) in neg_arr.iter().enumerate() {
+                                let kind = n
+                                    .get("negative_kind")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("structural");
+                                let reason = n
+                                    .get("rejection_reason")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("（未填写）");
+                                let summary = n
+                                    .get("amis_json_summary")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                buf.push_str(&format!(
+                                    "## 反例 {} · 类型: {}\n\n**原因**：{}\n\n",
+                                    i + 1,
+                                    kind,
+                                    reason
+                                ));
+                                if !summary.is_empty() {
+                                    buf.push_str(&format!("**场景摘要**：{}\n\n", summary));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(r) => tracing::warn!("negative search 返回非 2xx: {}", r.status()),
+            Err(e) => tracing::warn!("negative search 调用失败: {}", e),
+        }
+    }
+
+    // 事件：RAG 样例注入（含每条的 id / similarity / team，供"执行详情"面板审计）
+    let event_payload = json!({
+        "type": "rag_samples_injected",
+        "data": {
+            "query_preview": query_text.chars().take(200).collect::<String>(),
+            "query_length": query_text.chars().count(),
+            "top_k": 3,
+            "total_hits": results.len(),
+            "results": results.iter().map(|r| json!({
+                "id": r.get("id").and_then(|v| v.as_i64()),
+                "source_team": r.get("source_team").and_then(|v| v.as_str()),
+                "similarity": r.get("similarity").and_then(|v| v.as_f64()),
+                "amis_json_summary": r.get("amis_json_summary")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.chars().take(150).collect::<String>()),
+            })).collect::<Vec<_>>(),
+        }
+    });
+    let db_bg = state.db.clone();
+    tokio::spawn(async move {
+        let _ = project_task_event::ActiveModel {
+            task_id: Set(task_id),
+            event_type: Set("rag_samples_injected".to_owned()),
+            payload: Set(event_payload.to_string()),
+            created_at: Set(chrono::Local::now().naive_local()),
+            ..Default::default()
+        }
+        .insert(&db_bg)
+        .await;
+    });
+
+    // 2026-04-25 tracelog：把 Top-K 召回样本的 full_amis_json + full_code 整体快照打入 tracelog。
+    // 不写 DB（避免 project_task_event payload 巨大），直接调 tracelog::route_event 让它走文件归档。
+    // 注意：事件 type=rag_samples_snapshot 在 tracelog::route_event 里被识别后落到 task-{id}/rag_snapshot/samples.json。
+    // 配 mode=disabled 时是 no-op。
+    let snapshot_payload = json!({
+        "type": "rag_samples_snapshot",
+        "data": {
+            "query_preview": query_text.chars().take(200).collect::<String>(),
+            "samples": results.iter().map(|r| json!({
+                "id": r.get("id").and_then(|v| v.as_i64()),
+                "source_team": r.get("source_team").and_then(|v| v.as_str()),
+                "tech_stack": r.get("tech_stack").and_then(|v| v.as_str()),
+                "tech_stacks": r.get("tech_stacks"),
+                "ui_libs": r.get("ui_libs"),
+                "platforms": r.get("platforms"),
+                "tags": r.get("tags"),
+                "rating": r.get("rating"),
+                "quality_verdict": r.get("quality_verdict"),
+                "similarity": r.get("similarity").and_then(|v| v.as_f64()),
+                "tag_boost": r.get("tag_boost").and_then(|v| v.as_f64()),
+                "thumbs_boost": r.get("thumbs_boost").and_then(|v| v.as_f64()),
+                "hit_boost": r.get("hit_boost").and_then(|v| v.as_f64()),
+                "score": r.get("score").and_then(|v| v.as_f64()),
+                "amis_json_summary": r.get("amis_json_summary"),
+                "code_summary": r.get("code_summary"),
+                "full_amis_json": r.get("full_amis_json"),
+                "full_code": r.get("full_code"),
+            })).collect::<Vec<_>>(),
+            "prompt_section_chars": buf.chars().count(),
+        }
+    });
+    crate::services::tracelog::route_event(&state, task_id, &snapshot_payload.to_string()).await;
+
     vec![buf]
 }
 
@@ -1158,6 +2028,46 @@ pub async fn adopt_task(
         }
     };
 
+    // 4.5 2026-04 多维标签回填：从 task 的新列（platforms / tech_stacks / ui_libs + template_name）
+    //     复制到 code_samples 对应列；entity 没字段所以走原生 SQL。
+    use sea_orm::{ConnectionTrait, Statement};
+    let task_tags_sql = "SELECT platforms, tech_stacks, ui_libs, template_name \
+                         FROM project_generation_task WHERE id = $1";
+    if let Ok(Some(row)) = state
+        .db
+        .query_one(Statement::from_sql_and_values(
+            state.db.get_database_backend(),
+            task_tags_sql,
+            [task_id.into()],
+        ))
+        .await
+    {
+        let task_platforms: Vec<String> = row.try_get("", "platforms").unwrap_or_default();
+        let task_tech_stacks: Vec<String> = row.try_get("", "tech_stacks").unwrap_or_default();
+        let task_ui_libs: Vec<String> = row.try_get("", "ui_libs").unwrap_or_default();
+        let task_template: Option<String> = row.try_get("", "template_name").ok();
+        let mut tags: Vec<String> = Vec::new();
+        if let Some(t) = &task_template {
+            tags.push(format!("template:{}", t));
+        }
+        tags.push(format!("source:task-{}", task_id));
+        let _ = state
+            .db
+            .execute(Statement::from_sql_and_values(
+                state.db.get_database_backend(),
+                "UPDATE code_samples SET platforms = $1, tech_stacks = $2, ui_libs = $3, tags = $4 \
+                 WHERE id = $5",
+                [
+                    task_platforms.into(),
+                    task_tech_stacks.into(),
+                    task_ui_libs.into(),
+                    tags.into(),
+                    inserted.id.into(),
+                ],
+            ))
+            .await;
+    }
+
     // 5. 异步向量化
     let summary_for_vec = inserted
         .amis_json_summary
@@ -1215,14 +2125,22 @@ async fn collect_code_from_sandbox(
     }
 
     // 2) 目录递归（depth 4 已经够覆盖 src/pages/{name}/index.vue）
+    // 注意：sandbox /fs/tree 返回 {root, depth, nodes: [...]}，walker 要从 nodes 数组进，
+    // 不能把整个外层对象当节点喂——历史 bug：直接传外层对象导致 walker 立刻退出，
+    // 全部业务代码（src/pages/**.vue / src/api/**.ts）都收不到，full_code 只剩 pages.json 空壳。
     let tree_root = sandbox.fs_tree(sandbox_id, Some(4)).await?;
     let mut files: Vec<String> = Vec::new();
-    walk_tree_collect_files(&tree_root, "", &mut files);
-    // 仅保留白名单目录里的文件
+    let nodes = tree_root
+        .get("nodes")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    walk_tree_collect_files(&nodes, "", &mut files);
+    // 仅保留白名单目录里的文件，且排除第一阶段已扫过的固定文件（避免 src/pages.json 重复入选）
     files.retain(|p| {
-        ADOPT_SCAN_DIRS
-            .iter()
-            .any(|prefix| p.starts_with(prefix))
+        !ADOPT_SCAN_FILES.contains(&p.as_str())
+            && ADOPT_SCAN_DIRS
+                .iter()
+                .any(|prefix| p.starts_with(prefix))
             && (p.ends_with(".vue")
                 || p.ends_with(".ts")
                 || p.ends_with(".js")
@@ -1230,7 +2148,9 @@ async fn collect_code_from_sandbox(
                 || p.ends_with(".scss")
                 || p.ends_with(".json"))
     });
-    files.sort();
+    // 排序权重：业务页面 .vue > components.vue > utils > 其它 > api（评委只看前几千字，
+    // 把"反向飞轮的产物 vue"放最前，否则 4000 字硬截断会切掉关键页面）。
+    files.sort_by_key(|p| (collect_priority(p), p.clone()));
     for path in files {
         if total_bytes >= ADOPT_MAX_TOTAL_BYTES {
             buf.push_str("\n\n_(后续文件超过 256KB 总量上限被截断)_\n");
@@ -1247,6 +2167,22 @@ async fn collect_code_from_sandbox(
         }
     }
     Ok((buf, count))
+}
+
+/// collect_code_from_sandbox 文件排序权重：小的优先。
+/// 评委 prompt 只看前 N 字截断，必须保证业务 .vue 在 api/utils 基础设施前面。
+fn collect_priority(path: &str) -> u8 {
+    if path.starts_with("src/pages/") && path.ends_with(".vue") {
+        0
+    } else if path.starts_with("src/components/") && path.ends_with(".vue") {
+        1
+    } else if path.starts_with("src/pages/") || path.starts_with("src/components/") {
+        2
+    } else if path.starts_with("src/utils/") {
+        3
+    } else {
+        4 // src/api/** 等基础设施
+    }
 }
 
 fn lang_for_file(path: &str) -> &'static str {
@@ -1312,4 +2248,194 @@ fn spawn_vectorize_for_adopt(state: &AppState, sample_id: i32, summary_text: Str
             .send()
             .await;
     });
+}
+
+// ───────────────────────── 删除任务（硬删除）
+
+#[derive(Debug, Deserialize)]
+pub struct BatchDeletePayload {
+    pub ids: Vec<i32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchDeleteFailure {
+    pub id: i32,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchDeleteResult {
+    pub deleted: Vec<i32>,
+    pub failed: Vec<BatchDeleteFailure>,
+}
+
+/// 单条删除：彻底清理任务及相关资源（沙箱、workdir、messages、events）。
+pub async fn delete_task(
+    State(state): State<AppState>,
+    auth_user: jwt::AuthUser,
+    Path(id): Path<i32>,
+) -> impl IntoResponse {
+    let user = match resolve_user(&state, &auth_user).await {
+        Ok(u) => u,
+        Err(e) => return e.into_response(),
+    };
+
+    match delete_one_task(&state, user.id, id).await {
+        Ok(()) => Json(json!({"deleted": id})).into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": e})),
+        )
+            .into_response(),
+    }
+}
+
+/// 批量删除：循环复用单条逻辑，单条失败不阻塞其他。
+pub async fn batch_delete_tasks(
+    State(state): State<AppState>,
+    auth_user: jwt::AuthUser,
+    Json(payload): Json<BatchDeletePayload>,
+) -> impl IntoResponse {
+    let user = match resolve_user(&state, &auth_user).await {
+        Ok(u) => u,
+        Err(e) => return e.into_response(),
+    };
+
+    let mut deleted: Vec<i32> = Vec::new();
+    let mut failed: Vec<BatchDeleteFailure> = Vec::new();
+
+    for id in payload.ids {
+        match delete_one_task(&state, user.id, id).await {
+            Ok(()) => deleted.push(id),
+            Err(e) => failed.push(BatchDeleteFailure { id, error: e }),
+        }
+    }
+
+    Json(BatchDeleteResult { deleted, failed }).into_response()
+}
+
+/// 删除任务的"快路径"：仅做归属校验 + DB 三件事（messages/events/task），
+/// 外部资源（claw session 终止、沙箱容器销毁、宿主机 workdir 删除）丢给后台 tokio task 静默执行。
+///
+/// 选择背景：批量删除沙箱/workdir 时单条 5-10s，76 条堆 5+ 分钟会让前端 30s 超时；
+/// 而 DB 三件事是毫秒级的，对前端体验影响最大。后台清理失败仅 tracing::warn，
+/// 沙箱本身有 idle retention 兜底，workdir 偶尔残留靠定期清理脚本（非本次范围）。
+async fn delete_one_task(state: &AppState, user_id: i32, id: i32) -> Result<(), String> {
+    let task = project_generation_task::Entity::find_by_id(id)
+        .filter(project_generation_task::Column::UserId.eq(user_id))
+        .one(&state.db)
+        .await
+        .map_err(|e| format!("DB error: {}", e))?
+        .ok_or_else(|| "任务不存在".to_string())?;
+
+    let claw_session_id = task.claw_session_id.clone();
+    let sandbox_id = task.sandbox_id.clone();
+    let workdir_path = task.workdir_path.clone();
+
+    // ── 同步阶段（DB 三件事，必须返回前完成）
+    let _ = project_task_message::Entity::delete_many()
+        .filter(project_task_message::Column::TaskId.eq(id))
+        .exec(&state.db)
+        .await;
+    let _ = project_task_event::Entity::delete_many()
+        .filter(project_task_event::Column::TaskId.eq(id))
+        .exec(&state.db)
+        .await;
+    project_generation_task::Entity::delete_by_id(id)
+        .exec(&state.db)
+        .await
+        .map_err(|e| format!("DB delete failed: {}", e))?;
+
+    // ── 异步阶段（claw / sandbox / workdir，丢后台不阻塞响应）
+    let bg_state = state.clone();
+    tokio::spawn(async move {
+        if let Some(session) = claw_session_id {
+            let claw = ClawAgentClient::new(
+                bg_state.http_client.clone(),
+                bg_state.claw_agent_url.clone(),
+            );
+            if let Err(e) = claw.stop_task(&session).await {
+                tracing::warn!("[bg] delete_task #{}: claw stop_task 失败: {}", id, e);
+            }
+        }
+        if let Some(sb) = sandbox_id {
+            let sandbox = SandboxClient::new(
+                bg_state.http_client.clone(),
+                bg_state.sandbox_url.clone(),
+            );
+            if let Err(e) = sandbox.delete(&sb).await {
+                tracing::warn!("[bg] delete_task #{}: 销毁沙箱失败: {}", id, e);
+            }
+        }
+        if let Some(wd) = workdir_path {
+            if !wd.is_empty() {
+                let path = std::path::Path::new(&wd);
+                if path.is_absolute() && path.exists() {
+                    if let Err(e) = tokio::fs::remove_dir_all(path).await {
+                        tracing::warn!(
+                            "[bg] delete_task #{}: 删 workdir {} 失败: {}",
+                            id,
+                            wd,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+        tracing::info!("[bg] delete_task #{}: 后台外部资源清理完成", id);
+    });
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, Utc};
+
+    /// task #100 防御回归：workdir 内只有早于任务创建时间的旧文件 → 不算变更
+    #[test]
+    fn workdir_unchanged_when_only_stale_files_present() {
+        let temp = tempfile::tempdir().expect("temp");
+        // 写一个文件
+        let f = temp.path().join("src/pages/index/index.vue");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "scaffold").unwrap();
+
+        // 把 task_created_at 设到未来（现在所有文件 mtime 都早于 task_created_at + 5s）
+        let future_task = (Utc::now() + Duration::minutes(5)).naive_utc();
+        let changed = workdir_changed_since_task_start(
+            temp.path().to_str().unwrap(),
+            future_task,
+        );
+        assert!(!changed, "stale-only workdir should be reported as unchanged");
+    }
+
+    /// 反面：任务开始之后写入文件 → 视为有变更
+    #[test]
+    fn workdir_changed_when_new_file_written_after_task_start() {
+        let temp = tempfile::tempdir().expect("temp");
+        // task 1 分钟前创建
+        let past_task = (Utc::now() - Duration::minutes(1)).naive_utc();
+        // 现在写文件
+        let f = temp.path().join("src/pages/foo/index.vue");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "fresh").unwrap();
+
+        let changed = workdir_changed_since_task_start(
+            temp.path().to_str().unwrap(),
+            past_task,
+        );
+        assert!(changed, "newly-written file should mark workdir as changed");
+    }
+
+    /// 不存在的 workdir → 保守放行（避免把合法 ready 误降级）
+    #[test]
+    fn workdir_changed_returns_true_for_missing_dir() {
+        let past_task = (Utc::now() - Duration::minutes(1)).naive_utc();
+        assert!(workdir_changed_since_task_start(
+            "/nonexistent/path/should/not/exist/zzz",
+            past_task
+        ));
+    }
 }

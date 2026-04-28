@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Navigate, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { getProfile } from '../../services/auth';
-import { Layout, Button, Avatar, Dropdown, Tooltip } from 'antd';
+import { getPendingCount } from '../../services/codeSamples';
+import { getSystemSetting } from '../../services/systemSettings';
+import { Badge, Layout, Button, Avatar, Dropdown, Tooltip } from 'antd';
 import {
   MessageOutlined,
   HistoryOutlined,
@@ -19,6 +21,10 @@ import {
   DatabaseOutlined,
   RightOutlined,
   DownOutlined,
+  ThunderboltOutlined,
+  ApiOutlined,
+  ControlOutlined,
+  ToolOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../../stores';
 import { useColors, useThemeMode } from '../../theme';
@@ -27,21 +33,30 @@ import type { ColorPalette } from '../../theme';
 const { Header, Sider, Content } = Layout;
 
 interface NavItem {
+  /** 类型：item=普通菜单项；group-title=分组标题（仅展示，不可点） */
+  type?: 'item' | 'group-title';
   /** 路由 key；有 children 时父项 key 仅作分组标识（点击不导航，只展开/折叠） */
   key: string;
-  icon: React.ReactNode;
+  icon?: React.ReactNode;
   label: string;
   /** 仅 admin 用户可见的菜单项（如知识库管理） */
   adminOnly?: boolean;
   /** 子菜单（父项不可路由，只用于分组） */
   children?: NavItem[];
+  /** 2026-04：菜单右侧角标（0 / undefined 时不显示），用于 RAG 待审数等 */
+  badge?: number;
 }
 
+// 2026-04-25 菜单重组：按业务把项目分两组——「生成 Amis」（自然语言 → JSON）/「Amis 生码」（JSON → 项目）。
+// 顶部 AI 对话独立置顶；底部系统设置带二级菜单（与知识库一致）。
 const navItems: NavItem[] = [
-  { key: '/chat', icon: <MessageOutlined />, label: '智能生成' },
-  { key: '/projects', icon: <RocketOutlined />, label: '项目工作台' },
+  { key: '/chat', icon: <MessageOutlined />, label: 'AI 对话' },
+  { type: 'group-title', key: 'group:amis-gen', label: '生成 Amis' },
+  { key: '/amis', icon: <ThunderboltOutlined />, label: 'Amis 生成' },
   { key: '/history', icon: <HistoryOutlined />, label: '生成历史' },
   { key: '/templates', icon: <AppstoreOutlined />, label: '模板库' },
+  { type: 'group-title', key: 'group:amis-code', label: 'Amis 生码' },
+  { key: '/projects', icon: <RocketOutlined />, label: '项目工作台' },
   // 知识库菜单仅对 admin 可见，下方根据 user.is_admin 过滤
   {
     key: '/knowledge-base',
@@ -53,7 +68,17 @@ const navItems: NavItem[] = [
       { key: '/knowledge-base/code-samples', icon: <DatabaseOutlined />, label: 'RAG 样例库' },
     ],
   },
-  { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
+  { type: 'group-title', key: 'group:divider', label: '' },
+  {
+    key: '/settings',
+    icon: <SettingOutlined />,
+    label: '系统设置',
+    children: [
+      { key: '/settings/providers', icon: <ApiOutlined />, label: '供应商管理' },
+      { key: '/settings/configs', icon: <ControlOutlined />, label: '模型配置' },
+      { key: '/settings/system', icon: <ToolOutlined />, label: '系统配置' },
+    ],
+  },
 ];
 
 function LogoSquare({ collapsed, c }: { collapsed: boolean; c: ColorPalette }) {
@@ -101,6 +126,47 @@ function LogoSquare({ collapsed, c }: { collapsed: boolean; c: ColorPalette }) {
           amis-ai
         </span>
       )}
+    </div>
+  );
+}
+
+/// 分组标题（生成 Amis / Amis 生码 / 系统设置上方分隔线等）。
+/// - 折叠态统一只画一条细分隔线，不显示文字。
+/// - 展开态：有 label 显示成大写小字标题，没 label 当分隔线用。
+function GroupTitle({
+  label,
+  collapsed,
+  c,
+}: {
+  label: string;
+  collapsed: boolean;
+  c: ColorPalette;
+}) {
+  if (collapsed || !label) {
+    return (
+      <div
+        style={{
+          height: 1,
+          background: c.borderSubtle,
+          margin: collapsed ? '6px 8px' : '8px 4px 4px',
+        }}
+      />
+    );
+  }
+  return (
+    <div
+      style={{
+        padding: '12px 12px 4px',
+        fontSize: 10,
+        fontWeight: 600,
+        color: c.textSubtle,
+        letterSpacing: 0.6,
+        textTransform: 'uppercase',
+        fontFamily: 'var(--font-mono)',
+        userSelect: 'none',
+      }}
+    >
+      {label}
     </div>
   );
 }
@@ -167,7 +233,26 @@ function NavButton({
         </span>
       )}
       {!collapsed && (
-        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', flex: 1 }}>{item.label}</span>
+        <span
+          style={{
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          {item.label}
+          {(item.badge ?? 0) > 0 && (
+            <Badge
+              count={item.badge}
+              size="small"
+              overflowCount={99}
+              style={{ boxShadow: 'none' }}
+            />
+          )}
+        </span>
       )}
       {!collapsed && expandIcon && (
         <span style={{ display: 'flex', alignItems: 'center', fontSize: 10, opacity: 0.6 }}>
@@ -178,7 +263,16 @@ function NavButton({
   );
 
   return collapsed ? (
-    <Tooltip title={item.label} placement="right">{btn}</Tooltip>
+    // 折叠态：用 AntD Badge dot 模式加在按钮外层，避免遮挡 icon
+    (item.badge ?? 0) > 0 ? (
+      <Tooltip title={`${item.label}（${item.badge} 待审）`} placement="right">
+        <Badge count={item.badge} size="small" overflowCount={99} offset={[-4, 4]}>
+          {btn}
+        </Badge>
+      </Tooltip>
+    ) : (
+      <Tooltip title={item.label} placement="right">{btn}</Tooltip>
+    )
   ) : (
     btn
   );
@@ -353,6 +447,52 @@ export default function AppLayout() {
       .catch(() => { /* 静默：401 会被 axios 拦截器处理 */ });
     return () => { cancelled = true; };
   }, [authToken, setAuth]);
+
+  // 2026-04 Phase 0：admin 轮询 RAG 待审数量（用于菜单 Badge 角标）
+  // 周期由 system_settings.rag.pending_badge.poll_interval_sec 控制，默认 60s
+  // 同时监听 'rag:pending-changed' 自定义事件——业务侧（通过/拒绝/删除）成功后立即重拉，
+  // 不必等下一个轮询窗口。事件源：CodeSamplesHome 的 onApprove/onReject/onDelete/批量动作。
+  const [pendingCount, setPendingCount] = useState<number>(0);
+  useEffect(() => {
+    if (!authToken || user?.is_admin !== true) return;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const fetchOnce = async () => {
+      try {
+        const resp = await getPendingCount();
+        if (!cancelled) setPendingCount(resp.pending ?? 0);
+      } catch {
+        /* 静默：Badge 挂了不打断 */
+      }
+    };
+
+    const onBusinessTrigger = () => { void fetchOnce(); };
+    window.addEventListener('rag:pending-changed', onBusinessTrigger);
+
+    const scheduleLoop = async () => {
+      // 读周期配置（失败走默认 60s）
+      let intervalSec = 60;
+      try {
+        const cfg = await getSystemSetting('rag.pending_badge.poll_interval_sec');
+        const n = Number(cfg?.value);
+        if (!Number.isNaN(n) && n >= 10 && n <= 3600) intervalSec = n;
+      } catch {
+        /* ignore */
+      }
+      if (cancelled) return;
+      await fetchOnce();
+      timer = window.setInterval(() => { void fetchOnce(); }, intervalSec * 1000);
+    };
+
+    void scheduleLoop();
+    return () => {
+      cancelled = true;
+      if (timer != null) window.clearInterval(timer);
+      window.removeEventListener('rag:pending-changed', onBusinessTrigger);
+    };
+  }, [authToken, user?.is_admin]);
+
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     const saved = localStorage.getItem('amis-ai:sider-collapsed');
     return saved === '1';
@@ -409,17 +549,40 @@ export default function AppLayout() {
           {navItems
             // RBAC：非 admin 隐藏 adminOnly 菜单。直接访问 URL 时后端 403 兜底。
             .filter((n) => !n.adminOnly || user?.is_admin === true)
-            .map((n) => (
-              <NavGroup
-                key={n.key}
-                item={n}
-                collapsed={collapsed}
-                c={c}
-                pathname={location.pathname}
-                navigate={navigate}
-                defaultExpanded={false}
-              />
-            ))}
+            .map((n) => {
+              // 分组标题/分隔线：占独立一行，不进 NavGroup
+              if (n.type === 'group-title') {
+                return (
+                  <GroupTitle
+                    key={n.key}
+                    label={n.label}
+                    collapsed={collapsed}
+                    c={c}
+                  />
+                );
+              }
+              // 2026-04 Phase 0：给「RAG 样例库」子菜单挂 pending 数角标
+              let decorated: NavItem = n;
+              if (n.children?.length) {
+                const updatedChildren = n.children.map((ch) =>
+                  ch.key === '/knowledge-base/code-samples'
+                    ? { ...ch, badge: pendingCount }
+                    : ch
+                );
+                decorated = { ...n, children: updatedChildren };
+              }
+              return (
+                <NavGroup
+                  key={decorated.key}
+                  item={decorated}
+                  collapsed={collapsed}
+                  c={c}
+                  pathname={location.pathname}
+                  navigate={navigate}
+                  defaultExpanded={false}
+                />
+              );
+            })}
         </div>
       </Sider>
       <Layout style={{ background: c.bg }}>
@@ -446,37 +609,6 @@ export default function AppLayout() {
             <Breadcrumbs pathname={location.pathname} c={c} />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Tooltip title="命令面板（⌘K，即将推出）" placement="bottom">
-              <Button
-                type="text"
-                size="small"
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  color: c.textMuted,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  border: `1px solid ${c.border}`,
-                  borderRadius: 6,
-                  height: 28,
-                  padding: '0 10px',
-                }}
-                disabled
-              >
-                <span>搜索</span>
-                <kbd style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  padding: '1px 5px',
-                  border: `1px solid ${c.border}`,
-                  borderRadius: 3,
-                  background: c.surfaceElevated,
-                  fontSize: 10,
-                  color: c.textSubtle,
-                  fontFamily: 'var(--font-mono)',
-                }}>⌘K</kbd>
-              </Button>
-            </Tooltip>
             <Tooltip title={mode === 'dark' ? '切到浅色' : '切到深色'} placement="bottom">
               <Button
                 type="text"

@@ -108,7 +108,7 @@ fn init_skills_env() {
         Ok(temp) => {
             // 把 tempdir 的所有权"泄漏"给进程生命周期（drop 时会被自动清理也无所谓，
             // 因为 HOME 此时只用于 discover_skill_roots 这种**启动时扫描**类用途）。
-            let path = temp.into_path();
+            let path = temp.keep();
             tracing::info!("HOME 已隔离到 {}（阻断宿主机 .claude/.claw 私人 skill 污染）", path.display());
             std::env::set_var("HOME", path);
         }

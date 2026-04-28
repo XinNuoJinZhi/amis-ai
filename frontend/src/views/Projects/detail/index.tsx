@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Alert, Button, Input, message as antdMessage, Modal, Space, Spin, Segmented, Tabs, Tooltip } from 'antd';
+import { Alert, Button, Drawer, Input, message as antdMessage, Modal, Space, Spin, Segmented, Tabs, Tooltip } from 'antd';
 import {
   ArrowLeftOutlined,
   MessageOutlined,
@@ -9,6 +9,8 @@ import {
   BugOutlined,
   FileTextOutlined,
   AppstoreOutlined,
+  ExperimentOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
 import { useColors, type ColorPalette } from '../../../theme';
 import { useIdeStore } from '../../../stores/ide';
@@ -16,6 +18,7 @@ import {
   adoptProjectTask,
   getProjectTask,
   getDevStatus,
+  stopProjectTask,
   type ProjectTaskDetail,
 } from '../../../services/projects';
 import { useIframeConsole } from './hooks/useIframeConsole';
@@ -26,10 +29,11 @@ import WorkspaceView from './WorkspaceView';
 import ChatPanel from './panels/ChatPanel';
 import FileTreePanel from './panels/FileTreePanel';
 import EditorPanel from './panels/EditorPanel';
-import PreviewPanel from './panels/PreviewPanel';
+import PreviewPanel, { type PreviewAdoptInfo } from './panels/PreviewPanel';
 import TerminalPanel from './panels/TerminalPanel';
 import ConsolePanel from './panels/ConsolePanel';
 import LogsPanel from './panels/LogsPanel';
+import { ExecutionDetailsPanel } from './panels/ExecutionDetailsPanel';
 
 const STATUS_TEXT: Record<string, string> = {
   pending: '待启动',
@@ -135,6 +139,9 @@ function EditorView({
   c,
   events,
   connected,
+  onRefresh,
+  adopt,
+  taskStatus,
 }: {
   taskId: number;
   previewPort: number | null;
@@ -142,6 +149,9 @@ function EditorView({
   c: ColorPalette;
   events: import('./hooks/useProjectEvents').TaskEvent[];
   connected: boolean;
+  onRefresh?: () => Promise<void> | void;
+  adopt?: PreviewAdoptInfo;
+  taskStatus?: string | null;
 }) {
   const [activity, setActivity] = useState<'chat' | 'files'>('files');
   const bottomTab = useIdeStore((s) => s.bottomTab);
@@ -174,6 +184,15 @@ function EditorView({
         </span>
       ),
       children: <LogsPanel taskId={taskId} />,
+    },
+    {
+      key: 'execution',
+      label: (
+        <span>
+          <ExperimentOutlined /> 执行详情
+        </span>
+      ),
+      children: <ExecutionDetailsPanel taskId={taskId} events={events} onRefresh={onRefresh} />,
     },
   ];
 
@@ -242,7 +261,7 @@ function EditorView({
         {activity === 'files' ? (
           <FileTreePanel taskId={taskId} enabled />
         ) : (
-          <ChatPanel taskId={taskId} events={events} connected={connected} />
+          <ChatPanel taskId={taskId} events={events} connected={connected} taskStatus={taskStatus} />
         )}
       </div>
 
@@ -286,7 +305,7 @@ function EditorView({
       </div>
 
       <div style={{ width: '36%', minWidth: 360, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <PreviewPanel taskId={taskId} previewPort={previewPort} devReady={devReady} />
+        <PreviewPanel taskId={taskId} previewPort={previewPort} devReady={devReady} adopt={adopt} />
       </div>
     </div>
   );
@@ -305,7 +324,7 @@ export default function ProjectDetail() {
 
   // useProjectEvents 已经在 mount 时拉过 history（见 hook 实现），这里直接用
   // 【顶层唯一调用点】—— ChatPanel 通过 props 接收，避免多个实例各自起 WS
-  const { events, connected } = useProjectEvents(taskId);
+  const { events, connected, refreshHistory } = useProjectEvents(taskId);
 
   const { steps, phase, setViewMode, anyStepFailed } = useTaskPhase(task, events);
 
@@ -329,19 +348,53 @@ export default function ProjectDetail() {
     };
   }, [taskId, reset]);
 
-  // Onboarding 阶段每 3 秒轮询一次 task（sandbox_id / claw_session_id 会逐步填上）；
-  // 事件流本身由 WebSocket 推送，不需要重复轮询 history
+  // 任务活跃期（pending / running / waiting_user）每 3 秒轮询 task，覆盖：
+  //   1. onboarding 阶段 sandbox_id / claw_session_id 填上
+  //   2. workspace 阶段 dev ready → succeeded / runtime_error → failed 这类
+  //      由 backend dev_status_watcher 内部产生的状态切换（这些 status_change 事件
+  //      只 insert DB 不 broadcast 到 WS，前端 events 流拿不到）
+  // 状态切到终结态（succeeded / failed / stopped）后 effect re-run 直接 return，停止轮询。
   useEffect(() => {
-    if (phase !== 'onboarding') return;
+    if (!task) return;
+    const isActive =
+      task.status === 'pending' ||
+      task.status === 'running' ||
+      task.status === 'waiting_user';
+    if (!isActive) return;
     const tick = async () => {
       try {
         const t = await getProjectTask(taskId);
         setTask(t);
       } catch {}
     };
-    const t = window.setInterval(tick, 3000);
-    return () => window.clearInterval(t);
-  }, [taskId, phase]);
+    const handle = window.setInterval(tick, 3000);
+    return () => window.clearInterval(handle);
+  }, [taskId, task?.status]);
+
+  // 全阶段：events 流里 status_change 一变化就刷一次 task。
+  // 解决任务从 running → succeeded/failed/stopped 时顶层 task.status 不更新的问题
+  // （workspace / editor 阶段没有定时轮询，TopBar / StopTaskButton / 采纳按钮的可见性都依赖 task.status）。
+  const lastStatusFromEventRef = useRef<string | null>(null);
+  useEffect(() => {
+    let latest: string | null = null;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i] as any;
+      const t = e.type || e.event_type;
+      if (t === 'status_change') {
+        latest = typeof e.data === 'string' ? e.data : null;
+        break;
+      }
+    }
+    if (latest && latest !== lastStatusFromEventRef.current) {
+      lastStatusFromEventRef.current = latest;
+      void (async () => {
+        try {
+          const t = await getProjectTask(taskId);
+          setTask(t);
+        } catch { /* ignore */ }
+      })();
+    }
+  }, [events, taskId]);
 
   // dev-status 轮询（任何阶段都要）
   useEffect(() => {
@@ -361,6 +414,16 @@ export default function ProjectDetail() {
   useIframeConsole(taskId);
 
   const devReady = useMemo(() => isDevReady(devStatus), [devStatus]);
+
+  // 采纳中枢：TopBar 按钮 + Preview banner 共享同一 modal / 提交逻辑
+  const adoptCtrl = useAdoptController(task, async () => {
+    try { setTask(await getProjectTask(taskId)); } catch { /* ignore */ }
+  });
+  const adoptInfo: PreviewAdoptInfo = {
+    canAdopt: adoptCtrl.canAdopt,
+    adopted: adoptCtrl.adopted,
+    onRequestAdopt: adoptCtrl.trigger,
+  };
 
   if (loading && !task) {
     return (
@@ -436,11 +499,16 @@ export default function ProjectDetail() {
 
         <div style={{ flex: 1 }} />
 
-        {/* B.7：采纳按钮 */}
-        <AdoptButton task={task} onAdopted={async () => {
-          // 重新拉取任务以更新 adopted_at
+        {/* 执行详情：三个 phase 都可以打开（Drawer 形式），让 admin 随时审计 LLM 决策 / Skills / RAG / SystemPrompt */}
+        <ExecutionDetailsDrawerButton taskId={taskId} events={events} onRefresh={refreshHistory} />
+
+        {/* 停止任务：仅在未终结状态显示，允许管理员主动打断失控任务 */}
+        <StopTaskButton task={task} onStopped={async () => {
           try { setTask(await getProjectTask(taskId)); } catch { /* ignore */ }
-        }} c={c} />
+        }} />
+
+        {/* B.7：采纳按钮（hook 共享，Preview banner 也会 trigger 它） */}
+        <AdoptTopBarTrigger ctrl={adoptCtrl} c={c} />
 
         {/* 模式切换：Onboarding 阶段不显示；Workspace/Editor 阶段提供 Segmented 切换 */}
         {phase !== 'onboarding' && (
@@ -456,6 +524,7 @@ export default function ProjectDetail() {
           anyStepFailed={anyStepFailed}
           events={events}
           connected={connected}
+          taskStatus={task.status}
         />
       )}
       {phase === 'workspace' && (
@@ -465,6 +534,8 @@ export default function ProjectDetail() {
           devReady={devReady}
           events={events}
           connected={connected}
+          adopt={adoptInfo}
+          taskStatus={task.status}
         />
       )}
       {phase === 'editor' && (
@@ -475,10 +546,26 @@ export default function ProjectDetail() {
           c={c}
           events={events}
           connected={connected}
+          onRefresh={refreshHistory}
+          adopt={adoptInfo}
+          taskStatus={task.status}
         />
       )}
 
       <StatusBar task={task} dev={devStatus} c={c} />
+
+      {/* 共享采纳 Modal：TopBar 按钮 + Preview banner 都会 trigger 它 */}
+      <AdoptModal
+        open={adoptCtrl.open}
+        onCancel={() => adoptCtrl.setOpen(false)}
+        onOk={() => void adoptCtrl.submit()}
+        amisSummary={adoptCtrl.amisSummary}
+        setAmisSummary={adoptCtrl.setAmisSummary}
+        codeSummary={adoptCtrl.codeSummary}
+        setCodeSummary={adoptCtrl.setCodeSummary}
+        submitting={adoptCtrl.submitting}
+        c={c}
+      />
     </div>
   );
 }
@@ -535,22 +622,159 @@ function ModeSwitch({
 }
 
 /// B.7：采纳按钮（任务成功后可点；点击弹窗填可选摘要 → 调 adoptProjectTask）
-function AdoptButton({
+/**
+ * 执行详情 Drawer 按钮：TopBar 全局入口，三个 phase（onboarding/workspace/editor）都可点开。
+ * Drawer 里直接渲染 ExecutionDetailsPanel，事件数据由父层 useProjectEvents 传入。
+ * 与底部 Bottom Tab 的「执行详情」互不冲突——只是多一个入口，方便 workspace 模式用户。
+ */
+function ExecutionDetailsDrawerButton({
+  taskId,
+  events,
+  onRefresh,
+}: {
+  taskId: number;
+  events: import('./hooks/useProjectEvents').TaskEvent[];
+  onRefresh?: () => Promise<void> | void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Tooltip title="查看本次任务的 LLM / Skills / RAG / System Prompt 详情">
+        <Button
+          type="text"
+          size="small"
+          icon={<ExperimentOutlined />}
+          onClick={() => setOpen(true)}
+        >
+          执行详情
+        </Button>
+      </Tooltip>
+      <Drawer
+        title="🔍 执行详情"
+        placement="right"
+        width={640}
+        open={open}
+        onClose={() => setOpen(false)}
+        styles={{ body: { padding: 0 } }}
+      >
+        <ExecutionDetailsPanel taskId={taskId} events={events} onRefresh={onRefresh} />
+      </Drawer>
+    </>
+  );
+}
+
+/**
+ * 停止任务按钮：仅在"未终结状态"显示（pending/running/waiting_user），
+ * 允许管理员立即打断失控任务。点击后调 POST /api/projects/tasks/:id/stop，
+ * backend 会转发给 claw-agent-server.stop_task → 发 stop 信号给 runtime。
+ */
+function StopTaskButton({
   task,
-  onAdopted,
-  c,
+  onStopped,
 }: {
   task: ProjectTaskDetail | null;
-  onAdopted: () => void | Promise<void>;
-  c: ColorPalette;
+  onStopped: () => void | Promise<void>;
 }) {
+  const [stopping, setStopping] = useState(false);
+  if (!task) return null;
+  // 终结态（succeeded/failed/stopped）不显示停止按钮
+  if (
+    task.status === 'succeeded' ||
+    task.status === 'failed' ||
+    task.status === 'stopped'
+  ) {
+    return null;
+  }
+  const handle = async () => {
+    if (stopping) return;
+    setStopping(true);
+    try {
+      await stopProjectTask(task.id);
+      antdMessage.success('已发送停止信号');
+      await onStopped();
+    } catch (e: unknown) {
+      const errMsg =
+        (e as { response?: { data?: { error?: string } } }).response?.data?.error ?? String(e);
+      antdMessage.error(`停止失败：${errMsg}`);
+    } finally {
+      setStopping(false);
+    }
+  };
+  return (
+    <Tooltip title="停止当前任务（会打断 Agent、停 dev server）">
+      <Button
+        danger
+        size="small"
+        icon={<StopOutlined />}
+        loading={stopping}
+        onClick={handle}
+      >
+        停止任务
+      </Button>
+    </Tooltip>
+  );
+}
+
+/**
+ * 采纳状态中枢：TopBar 按钮 + Preview banner 共用同一套状态 / modal，
+ * 避免重复实现提交逻辑。状态与 modal 由父组件渲染，触发器（trigger）向下分发。
+ */
+function useAdoptController(
+  task: ProjectTaskDetail | null,
+  reloadTask: () => Promise<void> | void,
+) {
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [amisSummary, setAmisSummary] = useState('');
   const [codeSummary, setCodeSummary] = useState('');
 
-  if (!task) return null;
-  if (task.adopted_at) {
+  const adopted = !!task?.adopted_at;
+  const canAdopt =
+    !!task && !adopted && (task.status === 'succeeded' || task.status === 'waiting_user');
+
+  const trigger = () => setOpen(true);
+
+  const submit = async () => {
+    if (!task) return;
+    setSubmitting(true);
+    try {
+      const resp = await adoptProjectTask(task.id, {
+        amis_json_summary: amisSummary.trim() || undefined,
+        code_summary: codeSummary.trim() || undefined,
+      });
+      antdMessage.success(`${resp.notice}（sample #${resp.sample_id}, 收集 ${resp.file_count} 文件）`);
+      setOpen(false);
+      setAmisSummary('');
+      setCodeSummary('');
+      await reloadTask();
+    } catch (e: unknown) {
+      const errMsg =
+        (e as { response?: { data?: { error?: string } } }).response?.data?.error ?? String(e);
+      antdMessage.error(`采纳失败：${errMsg}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return {
+    open,
+    setOpen,
+    submit,
+    submitting,
+    amisSummary,
+    setAmisSummary,
+    codeSummary,
+    setCodeSummary,
+    canAdopt,
+    adopted,
+    trigger,
+  };
+}
+
+type AdoptCtrl = ReturnType<typeof useAdoptController>;
+
+function AdoptTopBarTrigger({ ctrl, c }: { ctrl: AdoptCtrl; c: ColorPalette }) {
+  if (ctrl.adopted) {
     return (
       <span
         style={{
@@ -564,48 +788,11 @@ function AdoptButton({
       </span>
     );
   }
-  // 仅 succeeded / waiting_user 时允许采纳（任务必须有可用代码）
-  const canAdopt = task.status === 'succeeded' || task.status === 'waiting_user';
-  if (!canAdopt) return null;
-
-  const submit = async () => {
-    setSubmitting(true);
-    try {
-      const resp = await adoptProjectTask(task.id, {
-        amis_json_summary: amisSummary.trim() || undefined,
-        code_summary: codeSummary.trim() || undefined,
-      });
-      antdMessage.success(`${resp.notice}（sample #${resp.sample_id}, 收集 ${resp.file_count} 文件）`);
-      setOpen(false);
-      setAmisSummary('');
-      setCodeSummary('');
-      await onAdopted();
-    } catch (e: unknown) {
-      const errMsg =
-        (e as { response?: { data?: { error?: string } } }).response?.data?.error ?? String(e);
-      antdMessage.error(`采纳失败：${errMsg}`);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
+  if (!ctrl.canAdopt) return null;
   return (
-    <>
-      <Button type="primary" size="small" onClick={() => setOpen(true)}>
-        采纳
-      </Button>
-      <AdoptModal
-        open={open}
-        onCancel={() => setOpen(false)}
-        onOk={() => void submit()}
-        amisSummary={amisSummary}
-        setAmisSummary={setAmisSummary}
-        codeSummary={codeSummary}
-        setCodeSummary={setCodeSummary}
-        submitting={submitting}
-        c={c}
-      />
-    </>
+    <Button type="primary" size="small" onClick={ctrl.trigger}>
+      采纳
+    </Button>
   );
 }
 

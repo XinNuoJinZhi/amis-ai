@@ -36,10 +36,14 @@ async fn handle_ws(socket: WebSocket, state: AppState, task_id: i32) {
         }
     };
 
+    // 2026-04-25 amis-translator 路径：task 没启 LLM session（translator fully_supported 时
+    // 直接 fs_write + dev_start 跳过了 claw-agent），claw_session_id 为 None。
+    // 不再当作错误关闭，而是进入「idle keep-alive」模式：发一条 translator_idle 通知，
+    // 然后保持连接等客户端心跳/close。前端通过 REST history 拿到 translation_succeeded 等事件。
     let claw_session = match task.claw_session_id {
         Some(ref s) => s.clone(),
         None => {
-            let _ = send_error(socket, "Claw session not initialized").await;
+            handle_ws_translator_idle(socket, task_id).await;
             return;
         }
     };
@@ -69,14 +73,17 @@ async fn handle_ws(socket: WebSocket, state: AppState, task_id: i32) {
     let (mut client_tx, mut client_rx) = socket.split();
     let (mut upstream_tx, mut upstream_rx) = upstream.split();
 
-    // 转发上游 → 客户端，同时持久化到 project_task_event
-    let db = state.db.clone();
+    // 转发上游 → 客户端，同时持久化到 project_task_event；
+    // 2026-04-25 起还按 tracelog 配置写文件归档（mode=disabled 时是 no-op）。
+    let state_for_forward = state.clone();
     let forward = tokio::spawn(async move {
         while let Some(msg) = upstream_rx.next().await {
             match msg {
                 Ok(WsMessage::Text(text)) => {
-                    // 先持久化（fire-and-forget，不阻塞转发）
-                    persist_event(&db, task_id, &text).await;
+                    // 先持久化到 DB + 文件归档（fire-and-forget，不阻塞转发）
+                    persist_event(&state_for_forward.db, task_id, &text).await;
+                    crate::services::tracelog::route_event(&state_for_forward, task_id, &text)
+                        .await;
 
                     if client_tx.send(Message::Text(text)).await.is_err() {
                         break;
@@ -170,7 +177,9 @@ pub async fn list_task_pages(
 
     let pages_file = format!("{}/src/pages.json", workdir);
     let Ok(content) = std::fs::read_to_string(&pages_file) else {
-        return Json(serde_json::json!({"pages": []})).into_response();
+        // 2026-04：非 uniapp 底座没有 pages.json → 扫 src/pages/ 文件系统兜底
+        let scanned = scan_pages_fs(&workdir);
+        return Json(serde_json::json!({"pages": scanned})).into_response();
     };
 
     // pages.json 是带注释的 jsonc，先剥离 // 注释再解析
@@ -350,18 +359,219 @@ pub async fn list_events_history(
         .await
         .unwrap_or_default();
 
-    // 返回原 payload JSON 串数组，前端按顺序回放即可
+    // 返回原 payload JSON 串数组，前端按顺序回放即可。
+    // 注：backend 自己 insert 的事件（如 llm_selected）payload 里**不含** type 字段，
+    // 所以这里兜底把 row.event_type 注入到对象顶层，保证前端 normalizeHistoryItem 走正常分支。
     let payloads: Vec<serde_json::Value> = events
         .into_iter()
-        .filter_map(|e| serde_json::from_str::<serde_json::Value>(&e.payload).ok())
+        .filter_map(|e| {
+            let mut v = serde_json::from_str::<serde_json::Value>(&e.payload).ok()?;
+            if let Some(obj) = v.as_object_mut() {
+                if !obj.contains_key("type") {
+                    obj.insert("type".to_string(), serde_json::Value::String(e.event_type.clone()));
+                }
+                if !obj.contains_key("data") {
+                    // 兼容前端 ExecutionDetailsPanel 的 `details.llm?.data ?? details.llm` 取值：
+                    // 把扁平字段也镜像一份到 data，保证 KeyValueList 能渲染。
+                    let data_clone = serde_json::Value::Object(obj.clone());
+                    obj.insert("data".to_string(), data_clone);
+                }
+            }
+            Some(v)
+        })
         .collect();
 
     Json(payloads).into_response()
 }
 
+/// GET /api/projects/tasks/:id/tracelog
+/// 返回归档元数据：是否存在、大小、是否已打包。只有任务所属用户 + admin 才能看。
+pub async fn get_task_tracelog_info(
+    State(state): State<AppState>,
+    auth_user: jwt::AuthUser,
+    Path(id): Path<i32>,
+) -> impl IntoResponse {
+    let Some(user) = user::Entity::find()
+        .filter(user::Column::Username.eq(&auth_user.username))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return (axum::http::StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"用户不存在"}))).into_response();
+    };
+    let task = project_generation_task::Entity::find_by_id(id)
+        .filter(project_generation_task::Column::UserId.eq(user.id))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten();
+    if task.is_none() {
+        return (axum::http::StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"任务不存在"}))).into_response();
+    }
+
+    let info = crate::services::tracelog::task_tracelog_info(&state, id).await;
+    Json(info).into_response()
+}
+
+/// GET /api/projects/tasks/:id/tracelog/download
+/// 直接流 tar.gz 给浏览器。仅任务归属 + admin 能下载（防数据外泄）。
+pub async fn download_task_tracelog(
+    State(state): State<AppState>,
+    auth_user: jwt::AuthUser,
+    Path(id): Path<i32>,
+) -> impl IntoResponse {
+    let Some(user) = user::Entity::find()
+        .filter(user::Column::Username.eq(&auth_user.username))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return (axum::http::StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"用户不存在"}))).into_response();
+    };
+    let task = project_generation_task::Entity::find_by_id(id)
+        .filter(project_generation_task::Column::UserId.eq(user.id))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten();
+    if task.is_none() {
+        return (axum::http::StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"任务不存在"}))).into_response();
+    }
+
+    match crate::services::tracelog::task_tracelog_bytes(&state, id).await {
+        Some((bytes, filename)) => {
+            let headers = [
+                (axum::http::header::CONTENT_TYPE, "application/gzip".to_string()),
+                (
+                    axum::http::header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{}\"", filename),
+                ),
+            ];
+            (headers, bytes).into_response()
+        }
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "本次任务没有 tracelog 归档（可能 tracelog.mode=disabled 或 smart 模式下成功任务只保留 manifest）"})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/projects/tasks/:id/tracelog/ls
+/// 列出归档里所有可读文件（白名单过滤后），供前端 Drawer 左侧文件树
+pub async fn list_task_tracelog_files(
+    State(state): State<AppState>,
+    auth_user: jwt::AuthUser,
+    Path(id): Path<i32>,
+) -> impl IntoResponse {
+    let Some(user) = user::Entity::find()
+        .filter(user::Column::Username.eq(&auth_user.username))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return (axum::http::StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"用户不存在"}))).into_response();
+    };
+    let task = project_generation_task::Entity::find_by_id(id)
+        .filter(project_generation_task::Column::UserId.eq(user.id))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten();
+    if task.is_none() {
+        return (axum::http::StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"任务不存在"}))).into_response();
+    }
+    let files = crate::services::tracelog::task_tracelog_list_files(&state, id).await;
+    Json(serde_json::json!({ "files": files })).into_response()
+}
+
+/// GET /api/projects/tasks/:id/tracelog/file?path=relative/path
+/// 读单文件原文（路径白名单 + 1MB 截断）。供前端 Drawer 右侧 pre 预览。
+#[derive(Debug, serde::Deserialize)]
+pub struct TracelogFileQuery {
+    pub path: String,
+}
+
+pub async fn read_task_tracelog_file(
+    State(state): State<AppState>,
+    auth_user: jwt::AuthUser,
+    Path(id): Path<i32>,
+    axum::extract::Query(q): axum::extract::Query<TracelogFileQuery>,
+) -> impl IntoResponse {
+    let Some(user) = user::Entity::find()
+        .filter(user::Column::Username.eq(&auth_user.username))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return (axum::http::StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"用户不存在"}))).into_response();
+    };
+    let task = project_generation_task::Entity::find_by_id(id)
+        .filter(project_generation_task::Column::UserId.eq(user.id))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten();
+    if task.is_none() {
+        return (axum::http::StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"任务不存在"}))).into_response();
+    }
+    match crate::services::tracelog::task_tracelog_read_file(&state, id, &q.path).await {
+        Some(bytes) => {
+            // 给 markdown / json / jsonl 一律按 text/plain UTF-8 返回
+            // 前端按 path 后缀决定渲染方式（pre + 复制按钮）
+            let body = String::from_utf8_lossy(&bytes).to_string();
+            Json(serde_json::json!({ "path": q.path, "content": body, "size": bytes.len() })).into_response()
+        }
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "文件不存在或路径越权（仅允许 manifest.json / analysis_input.md / system_prompt.md / events.jsonl / llm_calls/*.json / skills_snapshot/**.md / rag_snapshot/*）"})),
+        )
+            .into_response(),
+    }
+}
+
 async fn send_error(mut socket: WebSocket, msg: &str) -> Result<(), axum::Error> {
     let body = serde_json::json!({"error": msg}).to_string();
     socket.send(Message::Text(body)).await
+}
+
+/// 2026-04-25：amis-translator 路径下没有 LLM session 时的 WS 处理。
+///
+/// 不连 claw-agent，仅发一条 translator_idle 通知 + 保持 keep-alive，
+/// 让前端 useProjectEvents 把 WS 当成「连上了但无增量」处理（事件靠 REST history 拉）。
+async fn handle_ws_translator_idle(socket: WebSocket, task_id: i32) {
+    use futures_util::{SinkExt, StreamExt};
+    let (mut client_tx, mut client_rx) = socket.split();
+
+    // 发一条「translator_idle」事件，前端 normalizeHistoryItem 会按 type 识别
+    let hello = serde_json::json!({
+        "type": "translator_idle",
+        "data": {
+            "task_id": task_id,
+            "reason": "task 由确定性翻译器生成，无 LLM session；事件流仅来自 REST history",
+        }
+    })
+    .to_string();
+    if client_tx.send(Message::Text(hello)).await.is_err() {
+        return;
+    }
+
+    // 维持连接：转发 ping → pong，等客户端 close
+    while let Some(msg) = client_rx.next().await {
+        match msg {
+            Ok(Message::Close(_)) | Err(_) => break,
+            Ok(Message::Ping(data)) => {
+                if client_tx.send(Message::Pong(data)).await.is_err() {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 // 允许未登录调试：若需要认证，可用 auth_user: jwt::AuthUser 并通过 query 传 token
@@ -550,4 +760,62 @@ pub async fn post_runtime_error(
         "max_attempts": RUNTIME_ERROR_MAX_FIX_ATTEMPTS
     }))
     .into_response()
+}
+
+/// 2026-04：非 uniapp 底座（React / Vue3 / RN 等）没有 `pages.json`，改扫 `src/pages/**` 目录。
+///
+/// 返回 `[{ "path": "/pages/<stem>", "title": "<stem>" }]`。
+/// `path` 仅作**页面切换下拉的标签**使用，实际 iframe URL 仍走 preview_port 根路径
+/// （React/Vue 路由由前端 router 决定）。上限 50 个文件，防 Agent 失控生成一堆文件卡住 UI。
+fn scan_pages_fs(workdir: &str) -> Vec<serde_json::Value> {
+    let pages_dir = std::path::PathBuf::from(workdir).join("src").join("pages");
+    if !pages_dir.is_dir() {
+        return Vec::new();
+    }
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> = vec![pages_dir.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for entry in rd.flatten() {
+            if out.len() >= 50 {
+                return out;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !matches!(ext, "tsx" | "jsx" | "vue" | "ts" | "js") {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(&pages_dir) else { continue };
+            // "Home.tsx"       → path = "/Home"、title = "Home"
+            // "user/detail.vue" → path = "/user/detail"、title = "user/detail"
+            let rel_noext = rel.with_extension("");
+            let rel_str = rel_noext.to_string_lossy().replace('\\', "/");
+            if rel_str.is_empty() {
+                continue;
+            }
+            // 过滤常见非页面文件（index.ts 路由注册文件 / 共享组件）
+            let base = rel_noext
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if base.starts_with('_') || base.eq_ignore_ascii_case("index") && ext != "tsx" && ext != "vue" {
+                continue;
+            }
+            out.push(serde_json::json!({
+                "path": format!("/{}", rel_str),
+                "title": rel_str,
+            }));
+        }
+    }
+    out.sort_by(|a, b| {
+        a["path"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["path"].as_str().unwrap_or(""))
+    });
+    out
 }

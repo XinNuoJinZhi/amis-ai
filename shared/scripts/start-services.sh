@@ -2,11 +2,18 @@
 # amis-ai 反向代码生成飞轮 - 一键启动三个 Rust 服务
 #
 # 用法：
-#   ./shared/scripts/start-services.sh          # 启动三服务（前台，日志到 /tmp）
-#   ./shared/scripts/start-services.sh stop     # 停止三服务
-#   ./shared/scripts/start-services.sh status   # 查看端口状态
+#   ./shared/scripts/start-services.sh                 # 启动三服务（前台，日志到 /tmp）
+#   ./shared/scripts/start-services.sh stop            # 停止三服务
+#   ./shared/scripts/start-services.sh status          # 查看端口状态
+#   ./shared/scripts/start-services.sh restart         # 停止后重启（默认自动检测是否需要 cargo build）
+#
+#   --rebuild     强制对三个 Rust crate 跑 cargo build（忽略 mtime 判断）
+#   --no-rebuild  跳过所有 cargo build（哪怕检测到源码更新，也用现有二进制）
+#
+#   环境变量 AMISAI_REBUILD=always / never 等价于上面两个开关。
 #
 # 设计要点：
+# - 2026-04 起：默认行为 = 检测每个 crate 的源码 mtime 是否晚于二进制，若新则自动 cargo build
 # - 在子进程启动时局部清空代理环境变量（避免请求内网 Ollama 时被系统代理拦截 502）
 # - 不修改当前 shell 的代理配置，也不修改 ~/.bashrc / /etc/environment
 # - 日志统一写 /tmp，方便 tail 调试
@@ -23,9 +30,81 @@ BACKEND_BIN="$AMIS_ROOT/backend/target/debug/amis-ai-backend"
 AGENT_DIR="$AMIS_ROOT/agent"
 AGENT_PORT="${AGENT_PORT:-8000}"
 
+# REBUILD 策略：
+#   auto（默认）——按 mtime 检测，源码新于二进制就 cargo build
+#   always        ——每次都 cargo build（--rebuild 或 AMISAI_REBUILD=always）
+#   never         ——从不 cargo build（--no-rebuild 或 AMISAI_REBUILD=never）
+REBUILD_MODE="${AMISAI_REBUILD:-auto}"
+
+# 检测 TCP 端口是否真的有进程在监听。
+# 2026-04-25：原来用 `nc -z localhost $port`，但 OpenBSD netcat 在 IPv6 优先解析时
+# 会把 v4-only listener 误判为 DOWN（已知 bug）。改用 ss 通过内核 socket 表查，最稳。
+# 兜底：ss 不在 PATH 时退回 nc。
+is_port_listening() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -lnt "sport = :$port" 2>/dev/null | grep -q LISTEN
+    return
+  fi
+  nc -z localhost "$port" 2>/dev/null
+}
+
+# 从 cargo crate 目录算出最新源文件 mtime；找不到源就返回 0
+crate_latest_mtime() {
+  local dir="$1"
+  if [[ ! -d "$dir/src" ]]; then
+    echo 0
+    return
+  fi
+  # 只看 .rs / Cargo.toml，避免被 target/ node_modules 等干扰
+  local paths=("$dir/src" "$dir/Cargo.toml")
+  find "${paths[@]}" -type f \( -name '*.rs' -o -name 'Cargo.toml' \) -printf '%T@\n' 2>/dev/null \
+    | sort -rn | head -1 | cut -d. -f1
+}
+
+# 需要 rebuild 吗？
+need_rebuild() {
+  local bin="$1" src_dir="$2"
+  [[ "$REBUILD_MODE" == "always" ]] && return 0
+  [[ "$REBUILD_MODE" == "never" ]] && return 1
+  # auto：二进制不存在 → 必须 build
+  [[ ! -x "$bin" ]] && return 0
+  local bin_mtime src_mtime
+  bin_mtime=$(stat -c '%Y' "$bin" 2>/dev/null || echo 0)
+  src_mtime=$(crate_latest_mtime "$src_dir")
+  [[ "$src_mtime" -gt "$bin_mtime" ]]
+}
+
+# 对一个 crate：需要 build 就调 cargo build；失败则 exit 1 中止启动
+build_one() {
+  local label="$1" crate_dir="$2" bin="$3" cargo_args="$4"
+  if need_rebuild "$bin" "$crate_dir"; then
+    echo "🔨 [rebuild] $label（源码新于二进制或二进制缺失）"
+    if ! (cd "$crate_dir" && env -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY \
+          cargo build $cargo_args); then
+      echo "❌ cargo build 失败：$label（$crate_dir）"
+      exit 1
+    fi
+  else
+    echo "✓  $label 二进制是新的（跳过 cargo build）"
+  fi
+}
+
+# 启动前统一跑三个 Rust crate 的按需 build
+rebuild_if_needed() {
+  if [[ "$REBUILD_MODE" == "never" ]]; then
+    echo "=== 跳过 cargo build（REBUILD_MODE=never）==="
+    return
+  fi
+  echo "=== cargo build 按需检测（mode=$REBUILD_MODE）==="
+  build_one "sandbox-service" "$AMIS_ROOT/sandbox" "$SANDBOX_BIN" ""
+  build_one "claw-agent-server" "$AMIS_ROOT/claw-code/rust/crates/claw-agent-server" "$CLAW_BIN" "-p claw-agent-server"
+  build_one "backend" "$AMIS_ROOT/backend" "$BACKEND_BIN" ""
+}
+
 start_one() {
   local name="$1" bin="$2" port="$3" extra_env="$4" cwd="${5:-$AMIS_ROOT}"
-  if nc -z localhost "$port" 2>/dev/null; then
+  if is_port_listening "$port"; then
     echo "⚠️  $name 端口 :$port 已被占用，跳过"
     return
   fi
@@ -47,6 +126,7 @@ start_one() {
 }
 
 start_all() {
+  rebuild_if_needed
   echo "=== 启动 sandbox-service (:8091) ==="
   # 传 UID/GID 给 sandbox-service，让它以宿主机用户身份拉起容器和 exec，
   # 避免容器 root 创建的文件在宿主机是 root-owned → claw-agent-server (karl) 写不进去
@@ -86,7 +166,7 @@ start_all() {
 # 如果 uv 不可用，退回 python -m uvicorn（要求 venv 已激活或全局装了 uvicorn）。
 start_python_agent() {
   local name="agent"
-  if nc -z localhost "$AGENT_PORT" 2>/dev/null; then
+  if is_port_listening "$AGENT_PORT"; then
     echo "⚠️  $name 端口 :$AGENT_PORT 已被占用，跳过"
     return
   fi
@@ -141,7 +221,7 @@ status() {
       8091) label=":8091 sandbox" ;;
       "$AGENT_PORT") label=":$AGENT_PORT agent (Python)" ;;
     esac
-    if nc -z localhost "$port" 2>/dev/null; then
+    if is_port_listening "$port"; then
       echo "  ✅ $label UP"
     else
       echo "  ❌ $label DOWN"
@@ -218,7 +298,7 @@ check() {
 
   # 8. 端口冲突（提示，不算 fail）
   for port in 8080 8090 8091 "$AGENT_PORT" 5173; do
-    if nc -z localhost "$port" 2>/dev/null; then
+    if is_port_listening "$port"; then
       echo "  ⚠️  :$port 已被占用（如要 fresh start 先 stop）"
     fi
   done
@@ -238,11 +318,22 @@ check() {
   fi
 }
 
-case "${1:-start}" in
-  start) start_all ;;
-  stop)  stop_all ;;
+# 扫一遍参数取命令 + --rebuild / --no-rebuild 开关
+CMD="start"
+for arg in "$@"; do
+  case "$arg" in
+    --rebuild) REBUILD_MODE="always" ;;
+    --no-rebuild) REBUILD_MODE="never" ;;
+    start|stop|restart|status|check) CMD="$arg" ;;
+    *) echo "未知参数: $arg"; echo "Usage: $0 {start|stop|restart|status|check} [--rebuild|--no-rebuild]"; exit 1 ;;
+  esac
+done
+
+case "$CMD" in
+  start)   start_all ;;
+  stop)    stop_all ;;
   restart) stop_all; sleep 2; start_all ;;
-  status) status ;;
-  check) check ;;
-  *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+  status)  status ;;
+  check)   check ;;
+  *) echo "Usage: $0 {start|stop|restart|status|check} [--rebuild|--no-rebuild]"; exit 1 ;;
 esac

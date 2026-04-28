@@ -3,7 +3,7 @@ import { Segmented } from 'antd';
 import { EyeOutlined, FolderOutlined, CodeOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useColors } from '../../../theme';
 import ChatPanel from './panels/ChatPanel';
-import PreviewPanel from './panels/PreviewPanel';
+import PreviewPanel, { type PreviewAdoptInfo } from './panels/PreviewPanel';
 import TerminalPanel from './panels/TerminalPanel';
 import ConsolePanel from './panels/ConsolePanel';
 import LogsPanel from './panels/LogsPanel';
@@ -18,6 +18,8 @@ interface Props {
   devReady: boolean;
   events: TaskEvent[];
   connected: boolean;
+  adopt?: PreviewAdoptInfo;
+  taskStatus?: string | null;
 }
 
 /**
@@ -27,7 +29,7 @@ interface Props {
  *
  * 日志 Tab 内部再上下分：浏览器控制台（上） + Dev 日志（下）
  */
-export default function WorkspaceView({ taskId, previewPort, devReady, events, connected }: Props) {
+export default function WorkspaceView({ taskId, previewPort, devReady, events, connected, adopt, taskStatus }: Props) {
   const c = useColors();
   const [tab, setTab] = useState<RightTab>('preview');
 
@@ -43,7 +45,7 @@ export default function WorkspaceView({ taskId, previewPort, devReady, events, c
     >
       {/* 左栏：对话 */}
       <div style={{ width: '42%', minWidth: 360, display: 'flex', minHeight: 0 }}>
-        <ChatPanel taskId={taskId} events={events} connected={connected} />
+        <ChatPanel taskId={taskId} events={events} connected={connected} taskStatus={taskStatus} />
       </div>
 
       {/* 右栏：Segmented + 单面板 */}
@@ -114,7 +116,7 @@ export default function WorkspaceView({ taskId, previewPort, devReady, events, c
         {/* Tab 内容 —— 用 display:none 隐藏非活动，保持状态（xterm / iframe 不重建） */}
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           <TabSlot active={tab === 'preview'}>
-            <PreviewPanel taskId={taskId} previewPort={previewPort} devReady={devReady} />
+            <PreviewPanel taskId={taskId} previewPort={previewPort} devReady={devReady} adopt={adopt} />
           </TabSlot>
           <TabSlot active={tab === 'files'}>
             <FilesPanel taskId={taskId} />

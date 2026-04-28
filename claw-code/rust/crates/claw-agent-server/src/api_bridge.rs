@@ -10,7 +10,122 @@ use runtime::{
     ApiClient, ApiRequest, AssistantEvent, ContentBlock, ConversationMessage, MessageRole,
     RuntimeError,
 };
+use serde_json::{json, Value};
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::broadcast;
+
+/// 进程内 LLM 调用计数器（用于 LlmCallSnapshot.call_seq）。
+/// 跨任务共享一个计数也能用——backend tracelog 按 task-id 隔离，call_seq 仅用于排序。
+static LLM_CALL_SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// 把 ConversationMessage 序列化成 JSON（runtime crate 没 derive Serialize，手撸）
+fn message_to_json(msg: &ConversationMessage) -> Value {
+    let role = match msg.role {
+        MessageRole::System => "system",
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
+    };
+    let blocks: Vec<Value> = msg
+        .blocks
+        .iter()
+        .map(|b| match b {
+            ContentBlock::Text { text } => json!({ "type": "text", "text": text }),
+            ContentBlock::ToolUse { id, name, input } => json!({
+                "type": "tool_use",
+                "id": id,
+                "name": name,
+                // input 是 LLM 给的 JSON 字符串，尽量解析成对象再嵌套（更易读）
+                "input": serde_json::from_str::<Value>(input).unwrap_or_else(|_| Value::String(input.clone())),
+            }),
+            ContentBlock::ToolResult {
+                tool_use_id,
+                tool_name,
+                output,
+                is_error,
+            } => json!({
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "tool_name": tool_name,
+                "output": output,
+                "is_error": is_error,
+            }),
+        })
+        .collect();
+    let mut obj = serde_json::Map::new();
+    obj.insert("role".to_string(), Value::String(role.to_string()));
+    obj.insert("blocks".to_string(), Value::Array(blocks));
+    if let Some(usage) = &msg.usage {
+        obj.insert(
+            "usage".to_string(),
+            json!({
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cache_read_input_tokens": usage.cache_read_input_tokens,
+                "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+            }),
+        );
+    }
+    Value::Object(obj)
+}
+
+/// 把 AssistantEvent 序列化成 JSON
+fn assistant_event_to_json(ev: &AssistantEvent) -> Value {
+    match ev {
+        AssistantEvent::TextDelta(text) => json!({ "type": "text_delta", "text": text }),
+        AssistantEvent::ToolUse { id, name, input } => json!({
+            "type": "tool_use",
+            "id": id,
+            "name": name,
+            "input": serde_json::from_str::<Value>(input).unwrap_or_else(|_| Value::String(input.clone())),
+        }),
+        AssistantEvent::Usage(u) => json!({
+            "type": "usage",
+            "input_tokens": u.input_tokens,
+            "output_tokens": u.output_tokens,
+            "cache_read_input_tokens": u.cache_read_input_tokens,
+            "cache_creation_input_tokens": u.cache_creation_input_tokens,
+        }),
+        AssistantEvent::PromptCache(pc) => json!({
+            "type": "prompt_cache",
+            "unexpected": pc.unexpected,
+            "reason": pc.reason,
+            "previous_cache_read_input_tokens": pc.previous_cache_read_input_tokens,
+            "current_cache_read_input_tokens": pc.current_cache_read_input_tokens,
+            "token_drop": pc.token_drop,
+        }),
+        AssistantEvent::MessageStop => json!({ "type": "message_stop" }),
+    }
+}
+
+/// 发出 LlmCallSnapshot —— 在 stream() 调用结束（无论成功失败）时一次性发出。
+/// 成本：每轮 LLM 调用一次 broadcast，落盘由 backend tracelog 路由处理。
+fn emit_llm_call_snapshot(
+    event_tx: &broadcast::Sender<TaskEvent>,
+    model: &str,
+    request: &ApiRequest,
+    result: &Result<Vec<AssistantEvent>, RuntimeError>,
+    elapsed_ms: u64,
+) {
+    let call_seq = LLM_CALL_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    let request_messages: Vec<Value> =
+        request.messages.iter().map(message_to_json).collect();
+    let (success, response_events) = match result {
+        Ok(events) => (true, events.iter().map(assistant_event_to_json).collect()),
+        Err(e) => (
+            false,
+            vec![json!({ "type": "error", "message": e.to_string() })],
+        ),
+    };
+    let _ = event_tx.send(TaskEvent::LlmCallSnapshot {
+        call_seq,
+        model: model.to_string(),
+        request_messages,
+        response_events,
+        elapsed_ms,
+        success,
+    });
+}
 
 /// 两种后端路径：
 /// - Anthropic 协议：走 claw-code 的 api crate（仍用 ProviderClient）
@@ -65,6 +180,17 @@ impl ProviderRuntimeClient {
 
 impl ApiClient for ProviderRuntimeClient {
     fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        let started = std::time::Instant::now();
+        let result = self.stream_inner(&request);
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        // 2026-04-25 tracelog：每轮 LLM 调用结束时落盘（broadcast → backend tracelog）
+        emit_llm_call_snapshot(&self.event_tx, &self.model, &request, &result, elapsed_ms);
+        result
+    }
+}
+
+impl ProviderRuntimeClient {
+    fn stream_inner(&self, request: &ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
         match &self.backend {
             Backend::OpenAiCompat(client) => {
                 // 自己解析：支持 reasoning 字段、<think> 标签统一化

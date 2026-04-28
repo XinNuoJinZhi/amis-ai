@@ -331,7 +331,17 @@ pub async fn list_provider_models(
 //  模型配置 (ModelConfig) CRUD
 // ============================
 
-const VALID_TASK_TYPES: [&str; 4] = ["generation", "embedding", "chat", "code_generation"];
+// 2026-04-25 把 skill_authoring / quality_judge 加进白名单。
+// 这两类 task_type 在 llm_selector::select_for_skill_authoring / select_for_quality_judge
+// 的 fallback 链里本来就有；「模型配置 → 槽位卡片」UI 让 admin 能显式配它们后，校验也得跟上。
+const VALID_TASK_TYPES: [&str; 6] = [
+    "generation",
+    "embedding",
+    "chat",
+    "code_generation",
+    "skill_authoring",
+    "quality_judge",
+];
 
 #[derive(Deserialize)]
 pub struct CreateModelConfigRequest {

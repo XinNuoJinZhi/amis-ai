@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, Select, Input, Form, message, Tag, Typography, Space, Checkbox, Collapse, Radio, Spin } from 'antd';
+import { Modal, Select, Input, Form, message, Tag, Typography, Space, Checkbox, Collapse, Radio, Spin, Switch } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import {
   createProjectTask,
@@ -9,6 +9,13 @@ import {
   type PermissionConfig,
 } from '../../services/projects';
 import { getProviders, getProviderModels } from '../../services/llm';
+import {
+  listPlatforms,
+  listTemplates,
+  resolveSkills,
+  type RegistryPlatform,
+  type RegistryTemplate,
+} from '../../services/registry';
 import { PRESETS } from './presets';
 
 const { TextArea } = Input;
@@ -47,8 +54,26 @@ export default function CreateTaskModal({ open, onClose }: Props) {
     'bash', 'read_file', 'write_file', 'edit_file', 'glob_search', 'grep_search',
   ]);
 
+  // ---- 2026-04 四维度选择（平台 × 技术栈 × UI 库 × 模板）----
+  // 注：技术栈 / UI 库**单选**：一个项目只会用一套主栈；多选语义会让 Agent 困惑。
+  //     backend 接口仍然接收数组，前端发送时用 [x] 包一层。
+  const [platform, setPlatform] = useState<string>('mobile');
+  const [techStack, setTechStack] = useState<string>('uniapp');
+  const [uiLib, setUiLib] = useState<string>('wot');
+  const [blankScaffold, setBlankScaffold] = useState<boolean>(false);
+  const [templateName, setTemplateName] = useState<string | null>('uniapp-wot-h5-template');
+  const [platformOptions, setPlatformOptions] = useState<RegistryPlatform[]>([]);
+  const [templateOptions, setTemplateOptions] = useState<RegistryTemplate[]>([]);
+  const [resolvedSkills, setResolvedSkills] = useState<string[]>([]);
+  const [resolveWarnings, setResolveWarnings] = useState<string[]>([]);
+  const resolveTimerRef = useRef<number | null>(null);
+
   // ---- 模型选择 ----
-  const [llmMode, setLlmMode] = useState<LlmMode>('auto');
+  // 默认走 default 模式：沿用系统「code_generation」task_type 配置
+  // （目前绑定到 SGLang Qwen3-Coder），避免 auto 模式对简单任务误选小模型。
+  // 2026-04-25 实验功能：是否启用确定性翻译器（默认关；主线 LLM 调试期）
+  const [enableTranslator, setEnableTranslator] = useState<boolean>(false);
+  const [llmMode, setLlmMode] = useState<LlmMode>('default');
   const [providers, setProviders] = useState<ProviderOption[]>([]);
   const [manualProviderId, setManualProviderId] = useState<number | undefined>(undefined);
   const [manualModel, setManualModel] = useState<string | undefined>(undefined);
@@ -74,7 +99,75 @@ export default function CreateTaskModal({ open, onClose }: Props) {
         ),
       )
       .catch(() => {/* ignore */});
+    listPlatforms().then(setPlatformOptions).catch(() => {});
+    listTemplates().then(setTemplateOptions).catch(() => {});
   }, [open]);
+
+  // 维度变化 → 500ms 防抖后调 resolve-skills，预览会激活哪些桶
+  useEffect(() => {
+    if (!open) return;
+    if (resolveTimerRef.current) window.clearTimeout(resolveTimerRef.current);
+    resolveTimerRef.current = window.setTimeout(() => {
+      resolveSkills({
+        platform,
+        tech_stacks: [techStack],
+        ui_libs: [uiLib],
+        template_name: blankScaffold ? null : templateName,
+      })
+        .then((res) => {
+          setResolvedSkills(res.selected);
+          setResolveWarnings(res.warnings);
+        })
+        .catch(() => {
+          setResolvedSkills([]);
+          setResolveWarnings([]);
+        });
+    }, 300);
+    return () => {
+      if (resolveTimerRef.current) window.clearTimeout(resolveTimerRef.current);
+    };
+  }, [open, platform, techStack, uiLib, templateName, blankScaffold]);
+
+  // 技术栈切换 → 默认同步把 UI 库换成该栈的第一个可选
+  const handleTechStackChange = (s: string) => {
+    setTechStack(s);
+    const pObj = platformOptions.find((x) => x.id === platform);
+    const sObj = pObj?.stacks.find((x) => x.id === s);
+    if (sObj && sObj.ui_libs.length > 0) {
+      setUiLib(sObj.ui_libs[0].id);
+    }
+    // 同步尝试重算一次匹配模板
+    const matched = templateOptions.find(
+      (t) =>
+        (t.platform === platform || t.platform === 'any') &&
+        t.tech_stacks.includes(s) &&
+        t.name !== '__blank__',
+    );
+    setTemplateName(matched?.name ?? null);
+    setBlankScaffold(!matched);
+  };
+
+  // 级联联动：选平台时默认把该平台的第一个 stack/ui 填进去
+  const handlePlatformChange = (p: string) => {
+    setPlatform(p);
+    const pObj = platformOptions.find((x) => x.id === p);
+    if (pObj && pObj.stacks.length > 0) {
+      const firstStack = pObj.stacks[0];
+      setTechStack(firstStack.id);
+      if (firstStack.ui_libs.length > 0) {
+        setUiLib(firstStack.ui_libs[0].id);
+      }
+      // 尝试自动匹配一个模板
+      const matched = templateOptions.find(
+        (t) =>
+          (t.platform === p || t.platform === 'any') &&
+          t.tech_stacks.includes(firstStack.id) &&
+          t.name !== '__blank__',
+      );
+      setTemplateName(matched?.name ?? null);
+      setBlankScaffold(!matched);
+    }
+  };
 
   // auto 模式下 debounce 500ms 调 preview
   useEffect(() => {
@@ -160,10 +253,16 @@ export default function CreateTaskModal({ open, onClose }: Props) {
 
     setSubmitting(true);
     try {
+      // 2026-04 Phase 4.4：前端停止发送 legacy tech_stack/ui_library 字段。
+      // backend.CreateTaskPayload 的兼容分支会从 tech_stacks[0] / ui_libs[0] 自动推导，
+      // 并双写到 DB 旧列，老列数据完整性不变。
       const resp = await createProjectTask({
         amis_json: trimmed,
-        tech_stack: 'uniapp-wot-h5',
-        ui_library: 'wot-ui',
+        // 2026-04 多维字段（单选 UI → 数组包一层发给后端）
+        platform,
+        tech_stacks: [techStack],
+        ui_libs: [uiLib],
+        template_name: blankScaffold ? '__blank__' : templateName,
         extra_prompt: extraPrompt.trim() || undefined,
         permission_config: {
           mode: permissionMode,
@@ -172,6 +271,7 @@ export default function CreateTaskModal({ open, onClose }: Props) {
         llm_mode: llmMode,
         llm_provider_id: llmMode === 'manual' ? manualProviderId : undefined,
         llm_model_name: llmMode === 'manual' ? manualModel : undefined,
+        enable_translator: enableTranslator,
       });
       message.success(`任务 #${resp.id} 已创建`);
       onClose();
@@ -231,7 +331,7 @@ export default function CreateTaskModal({ open, onClose }: Props) {
       okText="创建并跳转"
       confirmLoading={submitting}
       width={720}
-      destroyOnClose
+      destroyOnHidden
     >
       <Form layout="vertical">
         <Form.Item label="选择预设模板">
@@ -276,9 +376,137 @@ export default function CreateTaskModal({ open, onClose }: Props) {
           />
         </Form.Item>
 
-        <Form.Item label="技术栈">
-          <Tag color="geekblue">uniapp-wot-h5</Tag>
-          <Text type="secondary" style={{ fontSize: 12 }}>（MVP 只支持这一种）</Text>
+        <Form.Item label="目标平台">
+          <Radio.Group
+            value={platform}
+            onChange={(e) => handlePlatformChange(e.target.value)}
+            optionType="button"
+            buttonStyle="solid"
+            options={platformOptions.map((p) => ({ label: p.name, value: p.id }))}
+          />
+          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+            选择生成代码的运行平台（Web 浏览器 / 移动端）。技术栈和 UI 库会据此过滤。
+          </Text>
+        </Form.Item>
+
+        <Form.Item
+          label="技术栈"
+          help="一个任务只走一条主技术栈；Skills 桶会按这里选的栈叠加。"
+        >
+          <Select
+            showSearch
+            value={techStack}
+            onChange={handleTechStackChange}
+            placeholder="选技术栈"
+            options={(platformOptions.find((p) => p.id === platform)?.stacks || []).map((s) => ({
+              label: `${s.name} (${s.id})`,
+              value: s.id,
+            }))}
+            style={{ width: '100%' }}
+          />
+        </Form.Item>
+
+        <Form.Item label="UI 组件库">
+          <Select
+            showSearch
+            value={uiLib}
+            onChange={(v) => setUiLib(v as string)}
+            placeholder="选 UI 组件库"
+            options={(() => {
+              // 根据当前 techStack 聚合可用 UI 库
+              const p = platformOptions.find((x) => x.id === platform);
+              const s = p?.stacks.find((x) => x.id === techStack);
+              return (s?.ui_libs || []).map((u) => ({
+                label: `${u.name} (${u.id})`,
+                value: u.id,
+              }));
+            })()}
+            style={{ width: '100%' }}
+          />
+        </Form.Item>
+
+        <Form.Item
+          label={
+            <Space>
+              <span>底座模板</span>
+              <Switch
+                size="small"
+                checked={blankScaffold}
+                onChange={(v) => {
+                  setBlankScaffold(v);
+                  if (v) setTemplateName(null);
+                }}
+                checkedChildren="从零搭建"
+                unCheckedChildren="选模板"
+              />
+            </Space>
+          }
+          help="勾「从零搭建」时，claw-code 会在空目录里自己写 package.json、构建配置和入口文件"
+        >
+          <Select
+            value={templateName}
+            onChange={(v) => setTemplateName(v)}
+            placeholder="选择底座模板（未选则自动匹配）"
+            disabled={blankScaffold}
+            allowClear
+            options={templateOptions
+              .filter((t) => t.name !== '__blank__')
+              .filter((t) => t.platform === 'any' || t.platform === platform)
+              .map((t) => ({
+                label: (
+                  <Space>
+                    <span>{t.name}</span>
+                    {!t.has_scaffold && <Tag color="orange">缺失目录</Tag>}
+                    <Tag color="blue">{t.platform}</Tag>
+                  </Space>
+                ),
+                value: t.name,
+              }))}
+            style={{ width: '100%' }}
+          />
+        </Form.Item>
+
+        <Form.Item label="Skills 桶预览">
+          <Space size={[4, 8]} wrap>
+            {resolvedSkills.length > 0 ? (
+              resolvedSkills.map((b) => (
+                <Tag key={b} color={b.startsWith('platform.') ? 'green' : b.startsWith('stack.') ? 'blue' : b.startsWith('ui.') ? 'purple' : 'default'}>
+                  {b}
+                </Tag>
+              ))
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>加载中…</Text>
+            )}
+          </Space>
+          {resolveWarnings.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              {resolveWarnings.map((w, i) => (
+                <Text key={i} type="warning" style={{ fontSize: 12, display: 'block' }}>
+                  ⚠️ {w}
+                </Text>
+              ))}
+            </div>
+          )}
+          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+            上面是根据当前选择会自动注入 system_prompt 的 Skills 桶。Agent 实际执行时会按这些桶的 SKILL.md 工作。
+          </Text>
+        </Form.Item>
+
+        <Form.Item
+          label="🪄 启用确定性翻译器（实验）"
+          tooltip="2026-04-25 实验功能：跳过 LLM 直接把 Amis JSON 翻译成 Vue 代码（覆盖 form/crud/page 等高频结构，0 次 LLM 调用）。降级时自动回退 LLM 流水线。当前默认关，等翻译器质量稳定后再切开"
+        >
+          <Space>
+            <Switch
+              checked={enableTranslator}
+              onChange={setEnableTranslator}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {enableTranslator
+                ? '✨ 已开启 — 优先走确定性翻译器（详见 docs/architecture/amis-translator-pipeline.md）'
+                : '默认走 LLM 流水线（生产稳定路径）'}
+            </Text>
+          </Space>
         </Form.Item>
 
         <Form.Item

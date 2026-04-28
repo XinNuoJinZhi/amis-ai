@@ -10,13 +10,14 @@ interface Props {
   anyStepFailed: boolean;
   events: TaskEvent[];
   connected: boolean;
+  taskStatus?: string | null;
 }
 
 /**
  * Onboarding：居中单列，顶部四步进度条，下方对话面板。
  * 所有步骤打勾后由父组件切换到 WorkspaceView。
  */
-export default function OnboardingView({ taskId, steps, anyStepFailed, events, connected }: Props) {
+export default function OnboardingView({ taskId, steps, anyStepFailed, events, connected, taskStatus }: Props) {
   const c = useColors();
 
   return (
@@ -102,7 +103,7 @@ export default function OnboardingView({ taskId, steps, anyStepFailed, events, c
             flexDirection: 'column',
           }}
         >
-          <ChatPanel taskId={taskId} events={events} connected={connected} bordered={false} />
+          <ChatPanel taskId={taskId} events={events} connected={connected} bordered={false} taskStatus={taskStatus} />
         </div>
 
         {/* 底部留白 */}

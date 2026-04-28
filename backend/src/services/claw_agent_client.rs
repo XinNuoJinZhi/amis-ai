@@ -17,13 +17,24 @@ pub struct LlmConfig {
     pub protocol: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct CreateTaskRequest {
     pub workdir: String,
     pub sandbox_id: String,
     pub initial_message: String,
     pub model: Option<String>,
     pub tech_stack: Option<String>,
+    /// 2026-04 多维选桶字段（可选；claw-agent-server 端优先用这些字段叠加 Skills 桶）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tech_stacks: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_libs: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_buckets: Option<Vec<String>>,
     pub llm_config: Option<LlmConfig>,
     pub permission_config: Option<serde_json::Value>,
     /// B.5：可选的额外 system_prompt 段（典型用途：RAG Top-K 样例）。
@@ -106,8 +117,4 @@ impl ClawAgentClient {
         }
     }
 
-    pub fn events_ws_url(&self, task_id: &str) -> String {
-        let ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://");
-        format!("{}/tasks/{}/events", ws_url, task_id)
-    }
 }

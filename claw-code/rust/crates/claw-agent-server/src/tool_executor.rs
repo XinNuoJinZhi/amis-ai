@@ -1,9 +1,9 @@
 use crate::sandbox_client::SandboxClient;
 use crate::state::TaskEvent;
-use anyhow::anyhow;
 use runtime::{ToolError, ToolExecutor};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use tokio::sync::broadcast;
 
 /// Skill 工具单次加载允许的最大 SKILL.md 文件大小（256 KB）。
@@ -16,6 +16,12 @@ pub struct SandboxToolExecutor {
     sandbox_id: String,
     workdir: PathBuf,
     event_tx: broadcast::Sender<TaskEvent>,
+    /// 任务开始时间（task_loop 构造 executor 的瞬间）。dev_start 前置健康检查
+    /// 用它判断 workdir 内是否有任何文件 mtime > task_started_at——
+    /// 全部"陈旧"则说明 LLM 一行业务代码都没改、却急着启动 dev server，
+    /// task #100 实锤：那次任务 55 次 write_file 全越界、workdir 一个文件没动，
+    /// 但 LLM 照样调 dev_start 自报"已完成"。
+    task_started_at: SystemTime,
 }
 
 impl SandboxToolExecutor {
@@ -30,6 +36,7 @@ impl SandboxToolExecutor {
             sandbox_id,
             workdir,
             event_tx,
+            task_started_at: SystemTime::now(),
         }
     }
 }
@@ -43,7 +50,12 @@ impl ToolExecutor for SandboxToolExecutor {
             "edit_file" => execute_edit_file(&self.workdir, input),
             "glob_search" => execute_glob_search(&self.workdir, input),
             "grep_search" => execute_grep_search(&self.workdir, input),
-            "dev_start" => execute_dev_start(&self.sandbox, &self.sandbox_id),
+            "dev_start" => execute_dev_start(
+                &self.sandbox,
+                &self.sandbox_id,
+                &self.workdir,
+                self.task_started_at,
+            ),
             // claw-code 标准 Skill 工具：按需加载某个 skill 的 SKILL.md 全文，
             // 配合 progressive disclosure，让 Agent 不必把所有 markdown 全塞进 system_prompt。
             // workdir 作为 cwd 传给 commands::resolve_skill_path 用于 ancestor 扫描，
@@ -67,9 +79,77 @@ impl ToolExecutor for SandboxToolExecutor {
     }
 }
 
+/// dev_start 前置健康检查：扫 workdir 下是否有任何文件的 mtime 晚于 task_started_at。
+///
+/// 动机：task #100 实锤——LLM 把 55 个 write_file 全写到了越界路径（被新版 `enforce_within_workdir`
+/// 拦了之后，文件根本没落地），workdir 里一个新文件都没有；但 LLM 照样调 dev_start 自报"已完成"。
+/// 状态机基于 dev ready 事件触发，于是任务被错误地标 succeeded。
+///
+/// 这层防御让 dev_start **当场拒绝**，错误信息明确告诉 Agent："你似乎还没写任何业务代码，
+/// 检查上面 write_file 是否报过路径错误，把路径改成相对路径重发"——LLM 还有自修复机会。
+///
+/// 实现：递归遍历 workdir，遇到任意文件 mtime > task_started_at（或 mtime > workdir 自身 mtime
+/// 留余量 5s 兜底）即视为"有产出"。空目录、I/O 错误、无法读 mtime 都按"无法判定"处理（保守放行，
+/// 不阻塞合法 use case）。
+fn dev_start_preflight(workdir: &Path, task_started_at: SystemTime) -> Result<(), ToolError> {
+    let mut saw_recent_file = false;
+
+    // 用 walkdir 递归扫描，但层级和目录数都设上限避免极端情况爆栈/超时。
+    // node_modules 永远跳过——种子模板里安装过依赖时它会有大量"新"文件，会误判为"有改动"，
+    // 但它跟业务代码无关。
+    for entry in walkdir::WalkDir::new(workdir)
+        .max_depth(8)
+        .into_iter()
+        .filter_entry(|e| {
+            !matches!(
+                e.file_name().to_str(),
+                Some("node_modules") | Some(".git") | Some("dist") | Some(".uniapp")
+            )
+        })
+        .filter_map(|e| e.ok())
+        .take(20_000)
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(mtime) = meta.modified() else { continue };
+        if mtime > task_started_at {
+            saw_recent_file = true;
+            break;
+        }
+    }
+
+    if saw_recent_file {
+        return Ok(());
+    }
+
+    Err(ToolError::new(
+        "❌ dev_start 前置检查失败：工作目录里没有任何在本任务期间被新建/修改的文件。\n\n\
+         可能的原因（按概率排序）：\n\
+         1. 你之前的 `write_file` / `edit_file` 都被路径校验拒绝了（错误信息里写明 `路径越界` 之类）——\
+         请回看历史工具结果，把路径**改成相对路径**（如 `src/pages/foo/index.vue`）重新写入。\n\
+         2. 你在 `bash` 工具里 mkdir/写文件——但 bash 在容器里跑，文件不会出现在工作目录。\
+         **业务代码必须用 write_file / edit_file 写**，bash 只用于运行命令（pnpm install / lint 等）。\n\
+         3. 你「以为」已经写完了，但其实一次 write_file 都没调用。\n\n\
+         请先把业务代码用 write_file / edit_file 真正写到工作目录，然后再调用 dev_start。\n\
+         （这条防线是 task #100 复盘后加的：那次 LLM 写了 55 次 write_file 但全部越界没落地，\
+         照样自信地 dev_start，结果预览跑的还是脚手架原版。）"
+            .to_string(),
+    ))
+}
+
 /// 调用 sandbox-service 的 dev-start 端点启动 Vite dev server 并让沙箱监控状态。
 /// 返回一段简短的状态描述给 Agent，避免它误以为"失败了"。
-fn execute_dev_start(sandbox: &SandboxClient, sandbox_id: &str) -> Result<String, ToolError> {
+fn execute_dev_start(
+    sandbox: &SandboxClient,
+    sandbox_id: &str,
+    workdir: &Path,
+    task_started_at: SystemTime,
+) -> Result<String, ToolError> {
+    // 防御层：workdir 没有任何"新文件"则拒绝 dev_start
+    dev_start_preflight(workdir, task_started_at)?;
+
     sandbox
         .dev_start(sandbox_id)
         .map_err(|e| ToolError::new(format!("dev_start failed: {}", e)))?;
@@ -134,16 +214,27 @@ fn execute_read_file(workdir: &std::path::Path, input: &str) -> Result<String, T
 ///
 /// 归一化规则：
 /// 1. 剥掉 `/workspace/` 或 `/workspace` 前缀 → 当相对路径处理，拼 workdir
-/// 2. 剥掉 `/var/amis-ai/workdirs/task-N/` 前缀（Agent 偶尔会用真实宿主机路径）→ 当相对路径
-/// 3. 其他绝对路径：保留（比如系统工具查文件）
-/// 4. 相对路径：拼 workdir
+/// 2. 剥掉 `/tmp/workspace/` 或 `/tmp/workspace` 前缀（task #100 实锤：LLM 凭旧记忆
+///    给 write_file 传容器视角的 `/tmp/workspace/...`，结果在宿主机另写到 host /tmp 死路里，
+///    任务"成功"但 dev server 跑的还是脚手架原版）→ 当相对路径
+/// 3. 剥掉 `/var/amis-ai/workdirs/task-N/` 前缀（Agent 偶尔会用真实宿主机路径）→ 当相对路径
+/// 4. 其他绝对路径：保留（read_file 偶尔需要读 /tmp/vite.log 等系统位置；
+///    write/edit 之后再由 `enforce_within_workdir` 做硬校验防越界）
+/// 5. 相对路径：拼 workdir
 fn normalize_path(workdir: &std::path::Path, path: &str) -> std::path::PathBuf {
     let trimmed = path.trim();
-    // 容器视角前缀
+    // 容器视角前缀（脚手架推荐写法）
     if let Some(rest) = trimmed.strip_prefix("/workspace/") {
         return workdir.join(rest);
     }
     if trimmed == "/workspace" {
+        return workdir.to_path_buf();
+    }
+    // 容器内 /tmp/workspace（早期约定，Agent 凭记忆复用 → 必须显式归一）
+    if let Some(rest) = trimmed.strip_prefix("/tmp/workspace/") {
+        return workdir.join(rest);
+    }
+    if trimmed == "/tmp/workspace" {
         return workdir.to_path_buf();
     }
     // 宿主机真实路径前缀（Agent 有时会手滑写出来）
@@ -156,12 +247,67 @@ fn normalize_path(workdir: &std::path::Path, path: &str) -> std::path::PathBuf {
             return workdir.to_path_buf();
         }
     }
-    // 其他绝对路径保留
+    // 其他绝对路径保留（写/编辑层面会有 enforce_within_workdir 兜底拦截）
     if std::path::Path::new(trimmed).is_absolute() {
         return std::path::PathBuf::from(trimmed);
     }
     // 相对路径拼 workdir
     workdir.join(trimmed)
+}
+
+/// 词法规范化：把 `..` / `.` / 多余分隔符等吃掉，**不接触文件系统**。
+///
+/// 用于 `enforce_within_workdir`——写/编辑前要判断 full_path 是否落在 workdir 内，
+/// 但 full_path 多半还不存在（write 创建新文件），`canonicalize` 直接 fail。
+/// 改用纯字符串规范化：能挡 `../../etc/passwd` 这类越界，又对未存在路径有效。
+fn lexically_normalize(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out: Vec<Component<'_>> = Vec::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                // 仅当上一段是 Normal 时才弹出；Prefix/RootDir 保留，避免越过根
+                if matches!(out.last(), Some(Component::Normal(_))) {
+                    out.pop();
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out.iter().collect()
+}
+
+/// 写/编辑工具的硬校验：归一化后的目标路径**必须**落在 workdir 子树内。
+///
+/// 动机：task #100 实锤——LLM 给 write_file 传 `/tmp/workspace/...`，
+/// `normalize_path` 老版本把它当"其他绝对路径"原样保留，结果文件落到宿主机 /tmp 里、
+/// dev server 跑的还是脚手架原版，任务"成功"但预览没改。这一层是兜底，
+/// 哪怕将来再冒出新的奇葩前缀，写/编辑层面也不会再悄悄越界。
+///
+/// 错误信息明确告诉 Agent 怎么修——用相对路径或 `/workspace/...`。
+fn enforce_within_workdir(
+    workdir: &std::path::Path,
+    full_path: &std::path::Path,
+    raw_path: &str,
+) -> Result<(), ToolError> {
+    let normalized = lexically_normalize(full_path);
+    let workdir_norm = lexically_normalize(workdir);
+    if normalized.starts_with(&workdir_norm) {
+        return Ok(());
+    }
+    Err(ToolError::new(format!(
+        "❌ 路径越界：`{raw}` 被解析到 `{full}`，落在工作目录 `{wd}` 之外。\n\n\
+         所有 write_file / edit_file 必须把文件写在工作目录内。请用以下任一方式：\n\
+         1. **相对路径**（推荐）：`src/pages/foo/index.vue`、`pages.json`、`vite.config.ts`\n\
+         2. 容器视角前缀：`/workspace/src/pages/foo/index.vue`（会被自动映射到工作目录）\n\n\
+         ❌ 禁止使用 `/tmp/...` `/home/...` `/etc/...` 等任何宿主机绝对路径。\n\
+         ⚠️ 如果你之前传过 `/tmp/workspace/...`，那是早期容器约定，已迁移到工作目录内，\
+         请改用相对路径或 `/workspace/...` 重新写入。",
+        raw = raw_path,
+        full = normalized.display(),
+        wd = workdir_norm.display()
+    )))
 }
 
 /// 预检写入的 .vue 文件内容：如果里面用到了 Wot UI 的某个组件但对应组件目录在
@@ -227,34 +373,109 @@ fn validate_wot_components(workdir: &std::path::Path, path: &str, content: &str)
     )))
 }
 
-/// 锁定文件白名单：Agent 不允许通过 write_file / edit_file 修改这些关键底座文件。
-/// 这些文件的版本依赖都是种子项目维护者锁定过的，改动极易破坏 npm 依赖解析。
-fn is_locked_scaffold_file(path: &str) -> bool {
-    let normalized = path.trim().trim_start_matches("./").trim_start_matches('/');
-    // 匹配文件名（允许路径前缀），如 "package.json" / "src/../package.json" / "/workspace/package.json"
-    let basename = normalized.rsplit('/').next().unwrap_or(normalized);
-    // 单文件锁定
-    if matches!(
-        basename,
-        "package.json"
-            | "pnpm-lock.yaml"
-            | "yarn.lock"
-            | "package-lock.json"
-            | "vite.config.ts"
-            | "vite.config.js"
-            | "tsconfig.json"
-            | ".npmrc"
-            | "manifest.json"
-    ) {
-        return true;
+/// （2026-04 技术栈解耦）锁定文件白名单已全面解封，Agent 可自由修改 package.json / vite.config.ts /
+/// src/main.ts 等底座文件。"不动底座"改为 prompt 层的软约束（写在 `_common` 和 `scaffold-from-scratch`
+/// skill 里），不再由工具层硬拒。
+///
+/// 函数保留（永远返回 false）只是为避免外部调用方在过渡期拿到 compile error；Phase 4 收敛时会彻底移除。
+#[allow(dead_code)]
+fn is_locked_scaffold_file(_path: &str) -> bool {
+    false
+}
+
+/// 2026-04-25：拦截 uni-app 项目中已知会导致 dev 启动报错的"幻觉 import"。
+///
+/// 触发场景：
+/// 1. `import { uni } from '@dcloudio/uni-app'`
+///    - `@dcloudio/uni-app` 包**没有** `uni` 命名导出，`uni` 是 H5 runtime 全局对象，直接用即可
+///    - 实测踩坑：task #88 / #91 / #93 都跌过同一个 SyntaxError: does not provide an export named 'uni'
+///    - SKILL.md 第 5 条早就写明「禁止」但 LLM 仍重复违反，必须代码层硬拦截
+///
+/// 2. `import { UniApp } from '@dcloudio/types'`（或类似命名导入）
+///    - `@dcloudio/types` 用 `namespace UniApp` 暴露类型，必须 `/// <reference types="@dcloudio/types" />`
+///      或不显式引用（在 tsconfig 的 types 数组里）；命名 import 编译期会报 ts(2305)
+///
+/// 拦截范围：.ts / .vue / .js / .mjs / .tsx 文件
+fn validate_uniapp_imports(path: &str, content: &str) -> Result<(), ToolError> {
+    let is_code = path.ends_with(".ts")
+        || path.ends_with(".tsx")
+        || path.ends_with(".js")
+        || path.ends_with(".mjs")
+        || path.ends_with(".vue");
+    if !is_code {
+        return Ok(());
     }
-    // 入口文件锁定（带 src/ 前缀判断，避免误伤同名业务文件）
+
+    // 模式 1：import 子句包含裸 `uni`（不是 `uniApp` 这种）来自 @dcloudio/uni-app
+    // 用 regex 模糊匹配各种空白 / 组合形态：
+    //   import { uni } from '@dcloudio/uni-app'
+    //   import { uni, foo } from "@dcloudio/uni-app"
+    //   import {uni} from '@dcloudio/uni-app'
+    let re_uni = regex::Regex::new(
+        r#"import\s*\{[^}]*\buni\b[^}]*\}\s*from\s*['"]@dcloudio/uni-app['"]"#,
+    )
+    .expect("regex");
+    if re_uni.is_match(content) {
+        return Err(ToolError::new(format!(
+            "❌ 文件 {path} 里包含 `import {{ uni }} from '@dcloudio/uni-app'` —— 这是 uni-app **#1 高频陷阱**：\n\n\
+             - `@dcloudio/uni-app` 包**没有** `uni` 命名导出。`uni` 是 uni-app H5 runtime 注入的**全局对象**，**直接用即可**：\n\
+                 ✅ `uni.request({{...}})`  `uni.navigateTo({{...}})`  `uni.showToast({{...}})`\n\
+                 ❌ `import {{ uni }} from '@dcloudio/uni-app'` → 浏览器报 SyntaxError，dev 起来但页面白屏\n\n\
+             - 如果 TypeScript 报 `Cannot find name 'uni'`，在文件顶部加一行三斜线引用：\n\
+                 `/// <reference types=\"@dcloudio/types\" />`\n\n\
+             - `@dcloudio/uni-app` 包**只**导出生命周期 composable（onLoad / onShow / onPullDownRefresh / onReachBottom 等），**不**导出 uni。\n\n\
+             请把这行 import **删掉**，直接调用 `uni.xxx`，再重写文件。"
+        )));
+    }
+
+    // 模式 2：从 @dcloudio/types 做命名 import（types 包用 namespace，不能命名 import）
+    let re_types = regex::Regex::new(
+        r#"import\s*\{[^}]*\}\s*from\s*['"]@dcloudio/types['"]"#,
+    )
+    .expect("regex");
+    if re_types.is_match(content) {
+        return Err(ToolError::new(format!(
+            "❌ 文件 {path} 里包含从 `@dcloudio/types` 的命名 import —— 这个包用 `namespace` 暴露类型，**不能**命名 import：\n\n\
+             - 错误写法：`import {{ UniApp }} from '@dcloudio/types'` → ts(2305) Module has no exported member\n\
+             - 正确做法 1（推荐）：在文件顶部加三斜线引用 `/// <reference types=\"@dcloudio/types\" />`，之后类型直接用 `UniApp.RequestOptions` 等\n\
+             - 正确做法 2：在 `tsconfig.json` 的 `compilerOptions.types` 数组里加 `\"@dcloudio/types\"`，全局生效\n\n\
+             请把这行命名 import **删掉**，按上面任一方式引用类型，再重写文件。"
+        )));
+    }
+
+    Ok(())
+}
+
+/// 2026-04-25：种子模板提供的"底座关键文件"——LLM 通常应该用 `edit_file` 精确改，
+/// 而不是 `write_file` 整文件覆盖。整个覆盖时极易丢掉模板里的拦截器、类型定义、
+/// runtime 初始化等关键逻辑（task #92/#93 实锤：LLM 整覆盖 src/api/client.ts 把
+/// axios 拦截器扔了，还顺手写了 `import {{ uni }} from '@dcloudio/uni-app'` 高频陷阱）。
+///
+/// 策略：
+/// - 列表里的路径，如果**已经存在**，则拒绝 write_file（要求改用 edit_file）
+/// - 不在列表里 / 列表里但首次创建（不存在）→ 放行
+fn is_protected_scaffold_file(path: &str) -> bool {
+    // 规范化：去前导 ./ 或 /，跟 LLM 传入路径打平
+    let normalized = path.trim_start_matches('/').trim_start_matches("./");
     matches!(
         normalized,
-        "src/main.ts" | "src/main.js" | "src/App.vue"
-    ) || normalized.ends_with("/src/main.ts")
-        || normalized.ends_with("/src/main.js")
-        || normalized.ends_with("/src/App.vue")
+        // uni-app 底座
+        "src/main.ts"
+        | "src/App.vue"
+        | "src/manifest.json"
+        | "src/uni.scss"
+        // API 层（脚手架已提供 axios + 拦截器实现）
+        | "src/api/client.ts"
+        | "src/api/http.ts"
+        | "src/api/index.ts"
+        // 构建工具
+        | "vite.config.ts"
+        | "tsconfig.json"
+        | "package.json"
+        | "pnpm-lock.yaml"
+        | "index.html"
+        | ".npmrc"
+    )
 }
 
 fn execute_write_file(workdir: &std::path::Path, input: &str) -> Result<String, ToolError> {
@@ -266,12 +487,7 @@ fn execute_write_file(workdir: &std::path::Path, input: &str) -> Result<String, 
         .and_then(|v| v.as_str())
         .ok_or_else(|| ToolError::new("Missing 'path' field in write_file input"))?;
 
-    if is_locked_scaffold_file(path) {
-        return Err(ToolError::new(format!(
-            "❌ 禁止修改锁定文件: {path}。package.json / pnpm-lock.yaml / vite.config.ts / tsconfig.json / .npmrc / manifest.json / src/main.ts / src/App.vue 是种子项目的锁定底座，改动会破坏依赖解析或 Vite 启动。特别注意：严禁在 src/main.ts 中 import 任何第三方库的 CSS（Wot UI 样式由 easycom 自动注入）。你只能在 src/pages/、src/api/、src/pages.json、src/static/ 下创建或修改文件。"
-        )));
-    }
-
+    // 2026-04：底座文件硬锁已解封，由 prompt/Skills 层软约束引导 Agent。
     let content = write_input
         .get("content")
         .and_then(|v| v.as_str())
@@ -279,8 +495,27 @@ fn execute_write_file(workdir: &std::path::Path, input: &str) -> Result<String, 
 
     // Wot UI 组件存在性预检（防止 Agent hallucinate 不存在的组件名导致 easycom 运行时 import 失败）
     validate_wot_components(workdir, path, content)?;
+    // uni-app 高频陷阱预检（import { uni } / 命名 import @dcloudio/types 等）
+    validate_uniapp_imports(path, content)?;
 
     let full_path = normalize_path(workdir, path);
+
+    // task #100 防御：写入路径必须落在 workdir 内。挡住任何"奇葩绝对路径"
+    // 让 LLM 立刻收到清晰的错误信息（说明该用相对路径 / `/workspace/...`）。
+    enforce_within_workdir(workdir, &full_path, path)?;
+
+    // 底座关键文件保护：已存在 + 在保护清单 → 拒绝整覆盖（强制走 edit_file）
+    if is_protected_scaffold_file(path) && full_path.exists() {
+        return Err(ToolError::new(format!(
+            "❌ 拒绝 write_file 整文件覆盖底座关键文件 `{path}`。\n\n\
+             这个文件是脚手架的「底座」——种子里已经实现了关键逻辑（如 axios 拦截器、runtime 初始化、构建配置等）。\n\
+             整覆盖会把这些一并丢掉，task #92/#93 已经为此栽过：LLM 整覆盖 client.ts 后，axios 拦截器没了，还顺手写了 `import {{ uni }}` 触发 SyntaxError。\n\n\
+             正确姿势：\n\
+             1. 先 `read_file {{path: \"{path}\"}}` 看清楚当前实现\n\
+             2. 用 `edit_file {{path, old_text, new_text}}` 做精确局部替换，**保留**已有的拦截器/类型/接口\n\
+             3. 如果你确认要从零重写底座，先 `bash: rm <文件>`（极少见，且应该有充足理由）"
+        )));
+    }
 
     if let Some(parent) = full_path.parent() {
         std::fs::create_dir_all(parent)
@@ -302,12 +537,7 @@ fn execute_edit_file(workdir: &std::path::Path, input: &str) -> Result<String, T
         .and_then(|v| v.as_str())
         .ok_or_else(|| ToolError::new("Missing 'path' field in edit_file input"))?;
 
-    if is_locked_scaffold_file(path) {
-        return Err(ToolError::new(format!(
-            "❌ 禁止修改锁定文件: {path}。只允许修改 src/pages.json（添加路由）、src/pages/**、src/api/** 等业务代码。src/main.ts / src/App.vue / package.json / vite.config.ts 等底座文件不可改。特别注意不要 import 第三方库的 CSS。"
-        )));
-    }
-
+    // 2026-04：底座文件硬锁已解封，由 prompt/Skills 层软约束引导 Agent。
     let old_text = edit_input
         .get("old_text")
         .and_then(|v| v.as_str())
@@ -319,6 +549,9 @@ fn execute_edit_file(workdir: &std::path::Path, input: &str) -> Result<String, T
         .ok_or_else(|| ToolError::new("Missing 'new_text' field in edit_file input"))?;
 
     let full_path = normalize_path(workdir, path);
+
+    // task #100 防御：编辑路径必须落在 workdir 内（同 write_file）
+    enforce_within_workdir(workdir, &full_path, path)?;
 
     let mut content = std::fs::read_to_string(&full_path)
         .map_err(|e| ToolError::new(format!("Failed to read file: {}", e)))?;
@@ -334,6 +567,8 @@ fn execute_edit_file(workdir: &std::path::Path, input: &str) -> Result<String, T
 
     // Wot UI 组件存在性预检（覆盖 edit_file 场景，避免 Agent 通过 edit 悄悄把不存在的组件塞进来）
     validate_wot_components(workdir, path, &content)?;
+    // uni-app 高频陷阱预检（同上）
+    validate_uniapp_imports(path, &content)?;
 
     std::fs::write(&full_path, content)
         .map_err(|e| ToolError::new(format!("Failed to write file: {}", e)))?;
@@ -645,6 +880,108 @@ mod tests {
         std::env::remove_var("SKILLS_PLUGIN_PATHS");
 
         assert!(enforce_skill_path_whitelist(&skill_md).is_ok());
+    }
+
+    // ─────────────────────── normalize_path / enforce_within_workdir ───────────────────────
+    // task #100 防御回归：LLM 给文件工具传了 `/tmp/workspace/...`，
+    // 老版本归一化把它当"其他绝对路径"放行，写到了宿主机 /tmp 里、
+    // dev server 跑的还是脚手架原版。下面 6 个 case 锁住这条路。
+
+    #[test]
+    fn normalize_strips_tmp_workspace_prefix() {
+        let wd = std::path::PathBuf::from("/var/amis-ai/workdirs/task-100");
+        assert_eq!(
+            normalize_path(&wd, "/tmp/workspace/src/pages/index/index.vue"),
+            wd.join("src/pages/index/index.vue")
+        );
+        assert_eq!(normalize_path(&wd, "/tmp/workspace"), wd);
+    }
+
+    #[test]
+    fn normalize_strips_workspace_prefix_unchanged() {
+        // 回归：老的 `/workspace/` 行为没被改掉
+        let wd = std::path::PathBuf::from("/var/amis-ai/workdirs/task-100");
+        assert_eq!(
+            normalize_path(&wd, "/workspace/src/main.ts"),
+            wd.join("src/main.ts")
+        );
+    }
+
+    #[test]
+    fn enforce_within_workdir_accepts_relative() {
+        let wd = std::path::PathBuf::from("/var/amis-ai/workdirs/task-100");
+        let full = normalize_path(&wd, "src/pages/foo/index.vue");
+        assert!(enforce_within_workdir(&wd, &full, "src/pages/foo/index.vue").is_ok());
+    }
+
+    #[test]
+    fn enforce_within_workdir_accepts_workspace_alias() {
+        let wd = std::path::PathBuf::from("/var/amis-ai/workdirs/task-100");
+        let full = normalize_path(&wd, "/workspace/src/main.ts");
+        assert!(enforce_within_workdir(&wd, &full, "/workspace/src/main.ts").is_ok());
+    }
+
+    #[test]
+    fn enforce_within_workdir_accepts_tmp_workspace_alias() {
+        // task #100 现场：旧前缀经 normalize 拍平后，必须能落在 workdir 内放行
+        let wd = std::path::PathBuf::from("/var/amis-ai/workdirs/task-100");
+        let raw = "/tmp/workspace/src/pages/profile/index.vue";
+        let full = normalize_path(&wd, raw);
+        assert!(enforce_within_workdir(&wd, &full, raw).is_ok());
+    }
+
+    #[test]
+    fn enforce_within_workdir_rejects_host_absolute() {
+        let wd = std::path::PathBuf::from("/var/amis-ai/workdirs/task-100");
+        // normalize 不识别这种前缀 → 原样保留 → enforce 拦截
+        let raw = "/tmp/foo/bar.txt";
+        let full = normalize_path(&wd, raw);
+        let err = enforce_within_workdir(&wd, &full, raw).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("路径越界"), "unexpected: {msg}");
+        assert!(msg.contains("相对路径"), "should hint relative path: {msg}");
+    }
+
+    #[test]
+    fn dev_start_preflight_rejects_unchanged_workdir() {
+        // 模拟 task #100：workdir 里只有"早就存在"的脚手架文件，没新内容
+        let temp = tempfile::tempdir().expect("temp");
+        let f = temp.path().join("src/pages/index/index.vue");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "scaffold").unwrap();
+
+        // task_started_at 设到未来 → 现有所有文件 mtime 都早于它
+        let task_started_at = SystemTime::now() + std::time::Duration::from_secs(60);
+        let result = dev_start_preflight(temp.path(), task_started_at);
+        assert!(result.is_err(), "should reject unchanged workdir");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("dev_start 前置检查失败"),
+            "unexpected: {msg}"
+        );
+        assert!(msg.contains("相对路径"), "should hint fix: {msg}");
+    }
+
+    #[test]
+    fn dev_start_preflight_accepts_workdir_with_recent_file() {
+        let temp = tempfile::tempdir().expect("temp");
+        // task_started_at 设到 60s 前
+        let task_started_at = SystemTime::now() - std::time::Duration::from_secs(60);
+        // 现在创建文件 → mtime ≈ now > task_started_at
+        let f = temp.path().join("src/pages/profile/index.vue");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "fresh").unwrap();
+        assert!(dev_start_preflight(temp.path(), task_started_at).is_ok());
+    }
+
+    #[test]
+    fn enforce_within_workdir_rejects_parent_traversal() {
+        let wd = std::path::PathBuf::from("/var/amis-ai/workdirs/task-100");
+        // 相对路径 + .. 越界
+        let raw = "../../../etc/passwd";
+        let full = normalize_path(&wd, raw);
+        let err = enforce_within_workdir(&wd, &full, raw).unwrap_err();
+        assert!(format!("{}", err).contains("路径越界"));
     }
 
     #[test]

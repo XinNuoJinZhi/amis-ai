@@ -11,6 +11,9 @@ pub struct SandboxClient {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateSandboxRequest {
     pub task_id: String,
+    /// 2026-04：dev server 启动命令（由 template_registry 决定；None 则 sandbox 用默认 `pnpm run dev:h5`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev_command: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -30,10 +33,13 @@ impl SandboxClient {
         Self { client, base_url }
     }
 
-    pub async fn create(&self, task_id: &str) -> Result<SandboxInfo> {
+    /// 2026-04：允许 backend 在创建沙箱时下发 `dev_command`（由 template_registry 决定）。
+    /// 旧的 `create()` 兼容包装已删（无人使用），调用方一律走 `create_with`。
+    pub async fn create_with(&self, task_id: &str, dev_command: Option<String>) -> Result<SandboxInfo> {
         let url = format!("{}/sandboxes", self.base_url);
         let req = CreateSandboxRequest {
             task_id: task_id.to_string(),
+            dev_command,
         };
 
         let resp = self.client.post(&url).json(&req).send().await?;
@@ -64,12 +70,18 @@ impl SandboxClient {
         Ok(resp.json::<serde_json::Value>().await?)
     }
 
-    pub fn base_url(&self) -> &str {
-        &self.base_url
-    }
-
-    pub fn http(&self) -> &Client {
-        &self.client
+    /// 启动沙箱里的 dev server（不带 LLM 路径——翻译器分支专用）。
+    /// dev_command 在沙箱创建时已通过 create_with 注入，这里只触发执行。
+    pub async fn dev_start(&self, sandbox_id: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/sandboxes/{}/dev-start", self.base_url, sandbox_id);
+        let resp = self.client.post(&url).send().await?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("dev_start failed: {} {}", status, text));
+        }
+        Ok(serde_json::from_str(&text)
+            .unwrap_or(serde_json::json!({"raw": text})))
     }
 
     // ───────── IDE 文件系统透传 ─────────

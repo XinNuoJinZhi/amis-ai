@@ -1,6 +1,19 @@
 ---
 name: uniapp-wot-h5
-description: UniApp + Wot UI（H5 模式）反向代码生成规则手册：把 Amis JSON 翻译成可运行的 Vue 3 + Wot 组件代码
+description: "[DEPRECATED] 由 stack-uniapp + ui-wot + platform-mobile 三桶替代。保留 references/ 作为细节文档库（Agent 按需 Skill 工具加载）"
+kind: legacy
+# 2026-04-24 起：不再作为自动选中的桶（维度字段全部留空）。内部文档继续可用。
+# 迁移矩阵：
+#   scaffold.md              → 由 stack-uniapp 指导 + scaffolds/uniapp-wot-h5-template 脚手架复制
+#   amis-to-vue-mapping.md   → 由 _common/amis-core-concepts + stack-uniapp 覆盖
+#   component-mapping.md     → 由 ui-wot 桶覆盖
+#   pages-json-rules.md      → 已并入 stack-uniapp "强约束" 第 1 条
+#   api-adapter.md           → 由 stack-uniapp "API" 段落覆盖
+#   common-errors.md         → 由 stack-uniapp "高频陷阱" 段落覆盖（2026-04-24 新增）
+platforms: []
+tech_stacks: []
+ui_libs: []
+priority: 10
 ---
 
 # Skill: uniapp-wot-h5

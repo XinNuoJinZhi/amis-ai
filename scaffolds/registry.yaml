@@ -1,0 +1,58 @@
+# 底座模板注册表（2026-04 技术栈解耦重构）
+#
+# 每条目描述一个"可选的底座模板"，backend 启动时加载到 AppState.template_registry。
+# 用户在新建任务时从这里选；也可以选 "__blank__" 让 claw-code Agent 从零搭建。
+#
+# 字段说明：
+#   name                  — 模板唯一标识（前端/后端/事件日志都用它），与 dir 同名或伪标识（__blank__）
+#   dir                   — 相对 $SCAFFOLD_ROOT 的子目录名；null 表示"无目录可复制"
+#   platform              — 目标平台：web / mobile / any
+#   tech_stacks           — 适配的技术栈（多选匹配）
+#   ui_libs               — 适配的 UI 组件库
+#   bootstrap             — 容器内首次启动前要跑的命令（按数组顺序执行，失败会记到 task 事件）
+#   dev_command           — dev server 启动命令；null 表示"由 Agent 生成 package.json 后动态读取 scripts.dev"
+#   dev_log               — dev server 日志文件路径（容器内绝对路径）
+#   preview_port_hint     — dev server 期望监听的端口（sandbox port_pool 分配后的映射端口）
+#   default_skill_buckets — 默认激活的 Skills 桶（用户没显式选时的 fallback）
+#
+# 新增模板只需在下面追加一条，然后（可选）在 scaffolds/<dir>/ 下放种子项目。
+
+version: 1
+templates:
+  # ── 现有 legacy 模板：uniapp + Wot UI (H5)
+  - name: uniapp-wot-h5-template
+    dir: uniapp-wot-h5-template
+    platform: mobile
+    tech_stacks: [uniapp]
+    ui_libs: [wot]
+    bootstrap: [pnpm install]
+    dev_command: pnpm run dev:h5
+    dev_log: /tmp/vite.log
+    preview_port_hint: 5173
+    default_skill_buckets: [_common, uniapp-wot-h5]
+
+  # ── Phase 3 新增：React + antd + Vite（Web 端）
+  - name: react-antd-vite-template
+    dir: react-antd-vite-template
+    platform: web
+    tech_stacks: [react]
+    ui_libs: [antd]
+    bootstrap: [pnpm install]
+    dev_command: pnpm run dev
+    dev_log: /tmp/vite.log
+    preview_port_hint: 5173
+    default_skill_buckets: [_common, platform-web, stack-react, ui-antd]
+
+  # ── 伪模板：从零搭建
+  # 选中这条时 backend 跳过 scaffold 复制，claw-code Agent 从空目录开始：
+  # 先写 package.json 和构建配置，再装依赖，最后 dev-start。
+  - name: __blank__
+    dir: null
+    platform: any
+    tech_stacks: [any]
+    ui_libs: [any]
+    bootstrap: []
+    dev_command: null
+    dev_log: /tmp/vite.log
+    preview_port_hint: 5173
+    default_skill_buckets: [_common, scaffold-from-scratch]

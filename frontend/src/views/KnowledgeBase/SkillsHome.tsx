@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Alert, Button, Empty, Input, Modal, Result, Space, Spin, message } from 'antd';
-import { FileTextOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { FileTextOutlined, PlusOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
 import {
   createBucket,
   listSkillBuckets,
@@ -171,6 +171,13 @@ export default function SkillsHome() {
             onClick={() => setNewBucketOpen(true)}
           >
             新建桶
+          </Button>
+          <Button
+            icon={<RobotOutlined />}
+            onClick={() => navigate('/knowledge-base/skills/new-ai')}
+            style={{ borderColor: c.accent, color: c.accent }}
+          >
+            AI 起草新桶
           </Button>
           <Button icon={<ReloadOutlined />} onClick={() => void refresh()}>
             刷新

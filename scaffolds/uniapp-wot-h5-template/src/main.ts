@@ -101,6 +101,29 @@ if (typeof window !== 'undefined' && window.parent !== window) {
       }
     }
   })
+
+  // ==== iframe 预览模式下强制 rpx 视觉稳定 ====
+  // 背景：uni-h5 runtime（@dcloudio/uni-h5/dist/uni-h5.es.js useRem）会把 documentElement.fontSize
+  // 设为 width/23.4375。当 iframe init 时机比父端把宽度缩到 375 早，width 会被算成
+  // 父窗口宽度（800+），导致 1rem=34px、44rpx=47px 等 2 倍放大，PC 预览看上去字号巨大。
+  //
+  // 双重兜底：
+  //   - pages.json globalStyle 里设 rpxCalcMaxDeviceWidth=480（任何 >480 的宽度回退到 baseWidth=375）
+  //   - 这里运行时强制把 fontSize 锁到 16px（= 375 / 23.4375），并监听 ResizeObserver 持续校正
+  //
+  // 这只在被父窗口嵌入时生效，正常浏览器直开预览页或手机端不受影响。
+  const lockRootFontSizeForIframe = () => {
+    const w = document.documentElement.clientWidth || window.innerWidth || 375
+    // 桌面预览（>480）走兜底 375；移动设备真实宽度 <=480 时直接采用，跟 uni-h5 计算一致
+    const effective = w > 480 ? 375 : w
+    document.documentElement.style.fontSize = effective / 23.4375 + 'px'
+  }
+  lockRootFontSizeForIframe()
+  window.addEventListener('load', lockRootFontSizeForIframe)
+  window.addEventListener('resize', lockRootFontSizeForIframe)
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(lockRootFontSizeForIframe).observe(document.documentElement)
+  }
 }
 // #endif
 

@@ -7,4 +7,8 @@ pub mod project_generation_task;
 pub mod project_task_message;
 pub mod project_task_event;
 pub mod code_sample;
+pub mod code_sample_audit;
 pub mod system_setting;
+pub mod skill_authoring_session;
+pub mod conversation_session;
+pub mod conversation_message;

@@ -232,10 +232,12 @@ async def init_knowledge_base():
 
     async with pool.acquire() as conn:
         for tpl in INITIAL_TEMPLATES:
+            # 2026-04-25：显式传 created_at，防 backend 还没跑 migration 兜底默认值
+            # （旧库 amis_templates.created_at 是 NOT NULL 无 DEFAULT，会报错）
             row = await conn.fetchrow(
                 """
-                INSERT INTO amis_templates (title, description, amis_json, category, source, quality_score)
-                VALUES ($1, $2, $3, $4, 'official', 0.8)
+                INSERT INTO amis_templates (title, description, amis_json, category, source, quality_score, created_at)
+                VALUES ($1, $2, $3, $4, 'official', 0.8, NOW())
                 RETURNING id
                 """,
                 tpl["title"],

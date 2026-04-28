@@ -1,20 +1,89 @@
 import { useEffect, useState } from 'react';
 import { Button, Select, Tooltip, Space } from 'antd';
-import { ReloadOutlined, ExportOutlined } from '@ant-design/icons';
+import { ReloadOutlined, ExportOutlined, CloseOutlined, RocketOutlined, MobileOutlined, DesktopOutlined } from '@ant-design/icons';
 import { listTaskPages, getDevStatus, type TaskPage } from '../../../../services/projects';
 import { useColors } from '../../../../theme';
+
+// 手机视口预设（贴近主流设备真实宽度，rpx 在这个宽度下渲染才符合手机视觉）
+const VIEWPORT_PRESETS = {
+  'iphone-se':   { label: 'iPhone SE',   w: 375, h: 667 },
+  'iphone-pro':  { label: 'iPhone Pro',  w: 390, h: 844 },
+  'iphone-max':  { label: 'iPhone Max',  w: 428, h: 926 },
+  'desktop':     { label: '桌面（铺满）', w: 0,   h: 0   }, // 0 = 100%
+} as const;
+type ViewportKey = keyof typeof VIEWPORT_PRESETS;
+const VIEWPORT_STORAGE_KEY = 'amis-ai/preview-viewport';
+
+export interface PreviewAdoptInfo {
+  canAdopt: boolean;          // 任务状态允许采纳（succeeded / waiting_user）
+  adopted: boolean;           // 已经采纳过
+  onRequestAdopt: () => void; // 打开采纳对话框
+}
 
 interface Props {
   taskId: number;
   previewPort: number | null;
   devReady: boolean;
+  adopt?: PreviewAdoptInfo;
 }
 
-export default function PreviewPanel({ taskId, previewPort, devReady }: Props) {
+// dev server Ready 后，用户可以从预览顶栏直接发起采纳；
+// 用户用 ✕ 关闭后本 session 内不再打扰（sessionStorage 按 taskId 维度记）
+function adoptBannerDismissKey(taskId: number) {
+  return `amis-ai/adopt-banner-dismissed/${taskId}`;
+}
+
+export default function PreviewPanel({ taskId, previewPort, devReady, adopt }: Props) {
   const darkColors = useColors();
   const [pages, setPages] = useState<TaskPage[]>([]);
   const [page, setPage] = useState<string>('');
   const [reloadKey, setReloadKey] = useState(0);
+
+  // 视口模式：默认 iphone-se（375×667），覆盖移动端任务的主流场景。
+  // 关键作用：uni-app H5 的 rpx 跟视口同宽缩放（runtime 强制 documentElement.fontSize = width/23.4375），
+  // PC 浏览器 iframe 100% 宽时 rpx 会成倍放大；锁 375 才能呈现手机真实视觉。
+  const [viewport, setViewport] = useState<ViewportKey>(() => {
+    try {
+      const saved = window.localStorage.getItem(VIEWPORT_STORAGE_KEY) as ViewportKey | null;
+      if (saved && saved in VIEWPORT_PRESETS) return saved;
+    } catch { /* ignore */ }
+    return 'iphone-se';
+  });
+  const setViewportPersisted = (v: ViewportKey) => {
+    setViewport(v);
+    try { window.localStorage.setItem(VIEWPORT_STORAGE_KEY, v); } catch { /* ignore */ }
+  };
+  const vp = VIEWPORT_PRESETS[viewport];
+  const isMobileViewport = vp.w > 0;
+
+  // 采纳引导 banner：dev ready 瞬间出现，用户可关闭（按 taskId 维度存 session）
+  const [adoptBannerDismissed, setAdoptBannerDismissed] = useState<boolean>(() => {
+    try {
+      return window.sessionStorage.getItem(adoptBannerDismissKey(taskId)) === '1';
+    } catch {
+      return false;
+    }
+  });
+  // 切换任务时重新读取 dismissed 状态
+  useEffect(() => {
+    try {
+      setAdoptBannerDismissed(
+        window.sessionStorage.getItem(adoptBannerDismissKey(taskId)) === '1'
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [taskId]);
+  const dismissAdoptBanner = () => {
+    try {
+      window.sessionStorage.setItem(adoptBannerDismissKey(taskId), '1');
+    } catch {
+      /* ignore */
+    }
+    setAdoptBannerDismissed(true);
+  };
+  const showAdoptBanner =
+    !!adopt && adopt.canAdopt && !adopt.adopted && devReady && !adoptBannerDismissed;
 
   useEffect(() => {
     if (!devReady) return;
@@ -84,6 +153,19 @@ export default function PreviewPanel({ taskId, previewPort, devReady }: Props) {
           )}
         </div>
         <Space size={4}>
+          <Tooltip title={isMobileViewport ? '手机视口（rpx 按手机宽度渲染）' : '桌面铺满'}>
+            <Select
+              size="small"
+              value={viewport}
+              onChange={setViewportPersisted}
+              style={{ minWidth: 120 }}
+              suffixIcon={isMobileViewport ? <MobileOutlined /> : <DesktopOutlined />}
+              options={Object.entries(VIEWPORT_PRESETS).map(([k, v]) => ({
+                label: v.w > 0 ? `${v.label} ${v.w}×${v.h}` : v.label,
+                value: k,
+              }))}
+            />
+          </Tooltip>
           <Tooltip title="刷新">
             <Button
               size="small"
@@ -106,19 +188,80 @@ export default function PreviewPanel({ taskId, previewPort, devReady }: Props) {
           )}
         </Space>
       </div>
-      <div style={{ flex: 1, background: '#FFFFFF', overflow: 'hidden', position: 'relative' }}>
+      {showAdoptBanner && adopt && (
+        <div
+          style={{
+            padding: '8px 12px',
+            background: darkColors.surfaceElevated,
+            borderBottom: `1px solid ${darkColors.borderSubtle}`,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            fontSize: 12,
+            color: darkColors.text,
+          }}
+        >
+          <RocketOutlined style={{ color: darkColors.accentCyan }} />
+          <span style={{ flex: 1 }}>
+            dev server 已就绪 —— 要把这份代码沉淀到 <b>RAG 样例库</b> 吗？
+          </span>
+          <Button
+            type="primary"
+            size="small"
+            onClick={adopt.onRequestAdopt}
+          >
+            采纳到 RAG
+          </Button>
+          <Tooltip title="本任务本次会话内不再提示">
+            <Button
+              type="text"
+              size="small"
+              icon={<CloseOutlined />}
+              onClick={dismissAdoptBanner}
+              style={{ color: darkColors.textSubtle }}
+            />
+          </Tooltip>
+        </div>
+      )}
+      <div
+        style={{
+          flex: 1,
+          // 手机视口时外层是深色面板（让"手机壳"浮起来），桌面视口时白底铺满
+          background: isMobileViewport ? darkColors.bg : '#FFFFFF',
+          overflow: 'auto',
+          position: 'relative',
+          display: isMobileViewport ? 'flex' : 'block',
+          alignItems: isMobileViewport ? 'flex-start' : undefined,
+          justifyContent: isMobileViewport ? 'center' : undefined,
+          padding: isMobileViewport ? '24px 16px' : 0,
+        }}
+      >
         {src ? (
-          // key 绑定到 reloadKey + page：换页时强制重建 iframe，
-          // 绕开"仅 hash 变化不触发 iframe 重新导航"的浏览器怪行为
+          // key 绑定到 reloadKey + page + viewport：换页/换视口时强制重建 iframe，
+          // 绕开"仅 hash 变化不触发 iframe 重新导航"的浏览器怪行为，
+          // 同时让 uni-app H5 runtime 重新计算 documentElement.fontSize（rpx 跟视口同步）
           <iframe
-            key={`${reloadKey}-${page || 'root'}`}
+            key={`${reloadKey}-${page || 'root'}-${viewport}`}
             src={src}
-            style={{
-              width: '100%',
-              height: '100%',
-              border: 'none',
-              background: '#FFFFFF',
-            }}
+            style={
+              isMobileViewport
+                ? {
+                    width: vp.w,
+                    height: vp.h,
+                    maxHeight: '100%',
+                    border: 'none',
+                    background: '#FFFFFF',
+                    borderRadius: 18,
+                    boxShadow: '0 8px 28px rgba(0,0,0,0.45), 0 2px 6px rgba(0,0,0,0.25)',
+                    flex: '0 0 auto',
+                  }
+                : {
+                    width: '100%',
+                    height: '100%',
+                    border: 'none',
+                    background: '#FFFFFF',
+                  }
+            }
             title="preview"
           />
         ) : (

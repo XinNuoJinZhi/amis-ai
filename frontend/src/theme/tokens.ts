@@ -176,6 +176,27 @@ export function buildThemeConfig(mode: ThemeMode): ThemeConfig {
         colorPrimaryTextActive: c.primaryContrast,
         paddingInline: 14,
       },
+      // Radio.Group buttonStyle=solid 激活态：与 Button primary 同色系（白底黑字 / 黑底白字）
+      Radio: {
+        buttonSolidCheckedColor: c.primaryContrast,
+        buttonSolidCheckedBg: c.primary,
+        buttonSolidCheckedHoverBg: c.primaryHover,
+        buttonSolidCheckedActiveBg: c.primaryActive,
+        buttonColor: c.text,
+        buttonBg: 'transparent',
+        buttonCheckedBg: c.primary,
+        colorPrimary: c.primary,
+        // 未激活按钮的边框色
+        colorBorder: c.border,
+      },
+      // Switch checked 态：同色系
+      Switch: {
+        colorPrimary: c.primary,
+        colorPrimaryHover: c.primaryHover,
+        // antd v5 Switch 的 checkedChildren 文字用全局 colorTextLightSolid，
+        // 在组件级覆盖为 primaryContrast（v0 暗色下 = 黑）
+        colorTextLightSolid: c.primaryContrast,
+      },
       Input: {
         activeShadow: `0 0 0 3px ${c.ring}`,
         activeBorderColor: c.text,

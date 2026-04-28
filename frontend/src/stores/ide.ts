@@ -19,7 +19,7 @@ export interface ConsoleEntry {
   stack?: string;
 }
 
-export type BottomTab = 'terminal' | 'console' | 'logs';
+export type BottomTab = 'terminal' | 'console' | 'logs' | 'execution';
 
 export interface LayoutSizes {
   fileTree: number;   // percent

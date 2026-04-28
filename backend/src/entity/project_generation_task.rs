@@ -35,6 +35,21 @@ pub struct Model {
     /// 本次任务最终使用的模型名
     #[sea_orm(column_type = "Text", nullable)]
     pub llm_model_name: Option<String>,
+    // 2026-04 技术栈解耦：多维选桶字段（原先 entity 缺失导致 create_task 必须 INSERT + 原生 SQL UPDATE 二次写）
+    //   DB 列由 main.rs 启动时 migration 创建；此处补齐 entity 以合并写入。
+    /// 目标平台（web / mobile / mini）。DB 列 VARCHAR(32) NOT NULL DEFAULT 'mobile'
+    pub platform: String,
+    /// 选中的底座模板名（registry.yaml 里的 name）。NULL = 从零搭建
+    #[sea_orm(column_type = "Text", nullable)]
+    pub template_name: Option<String>,
+    /// 用户显式勾选的 skill 桶；DB text[] NOT NULL DEFAULT '{}'
+    pub selected_skill_buckets: Vec<String>,
+    /// 多维平台数组
+    pub platforms: Vec<String>,
+    /// 多维技术栈数组
+    pub tech_stacks: Vec<String>,
+    /// 多维 UI 库数组
+    pub ui_libs: Vec<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

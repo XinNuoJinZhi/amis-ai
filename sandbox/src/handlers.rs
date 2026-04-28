@@ -13,6 +13,9 @@ use uuid::Uuid;
 #[derive(Debug, Deserialize)]
 pub struct CreateSandboxRequest {
     pub task_id: String,
+    /// 2026-04：由 backend 根据 template_registry 下发的 dev server 命令（可选）
+    #[serde(default)]
+    pub dev_command: Option<String>,
 }
 
 pub async fn create_sandbox(
@@ -70,6 +73,7 @@ pub async fn create_sandbox(
         dev_status: DevStatus::NotStarted,
         recent_logs: vec![],
         created_at: chrono::Utc::now(),
+        dev_command: payload.dev_command.clone(),
     };
 
     let sandbox_id = sb.id.clone();
@@ -142,10 +146,10 @@ pub async fn dev_start(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let (container_id, _port) = {
+    let (container_id, _port, dev_command) = {
         let map = state.sandboxes.read().await;
         match map.get(&id) {
-            Some(sb) => (sb.container_id.clone(), sb.preview_port),
+            Some(sb) => (sb.container_id.clone(), sb.preview_port, sb.dev_command.clone()),
             None => {
                 return (StatusCode::NOT_FOUND, Json(json!({"error": "沙箱不存在"})))
                     .into_response();
@@ -192,18 +196,21 @@ pub async fn dev_start(
                 let state_probe = state_bg.clone();
                 let sid = sandbox_id.clone();
                 let cid = container_id.clone();
+                let dev_cmd_inner = dev_command.clone();
                 tokio::spawn(async move {
-                    // nohup 起 vite，重定向日志到文件
+                    // 2026-04：dev_command 由 backend 根据 template_registry 在 create 时下发，
+                    // 未指定时 fallback 到 `pnpm run dev:h5`（保持 uniapp legacy 任务不退化）。
+                    let cmd = dev_cmd_inner
+                        .unwrap_or_else(|| "pnpm run dev:h5".to_string());
+                    let shell = format!(
+                        "cd /workspace && nohup sh -c '{} > /tmp/vite.log 2>&1' &",
+                        cmd.replace('\'', "'\\''")
+                    );
                     let _ = state_probe
                         .docker
                         .exec(
                             &cid,
-                            vec![
-                                "sh".into(),
-                                "-c".into(),
-                                // 注意：不再传 --host/--port，因为种子项目的 package.json script 和 vite.config.ts 已经写死（避免 uni CLI 参数重复 parse 成数组报错）
-                                "cd /workspace && nohup sh -c 'pnpm run dev:h5 > /tmp/vite.log 2>&1' &".into(),
-                            ],
+                            vec!["sh".into(), "-c".into(), shell],
                             None,
                         )
                         .await;

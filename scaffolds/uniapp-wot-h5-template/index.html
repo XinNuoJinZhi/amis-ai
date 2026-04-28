@@ -8,13 +8,11 @@
     />
     <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
     <title>amis-ai 脚手架</title>
-    <script>
-      // UniApp H5 运行时需要
-      document.addEventListener('DOMContentLoaded', function () {
-        document.documentElement.style.fontSize =
-          document.documentElement.clientWidth / 20 + 'px'
-      })
-    </script>
+    <!--
+      ⚠️ 不要再加 `documentElement.style.fontSize = clientWidth / 20 + 'px'` 那种「rem 适配脚本」。
+      uni-app H5 在编译期已经把 `rpx` 自动转成 `vw`（按 750 设计稿等分视口），跟根字号无关。
+      手动设根字号会**破坏**这套转换并导致 PC 预览时所有 rpx 元素巨大失真（2026-04-25 task #89 实锤）。
+    -->
   </head>
   <body>
     <div id="app"></div>

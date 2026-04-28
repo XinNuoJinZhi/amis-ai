@@ -1,15 +1,15 @@
 use crate::permission_prompter::PermissionDecisionPayload;
-use crate::state::{AgentTask, AppState, SharedState, TaskStatus};
+use crate::state::{AgentTask, SharedState, TaskStatus};
 use crate::task_loop::{parse_permission_mode, spawn_task_loop, PermissionConfig, TaskLoopConfig};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::IntoResponse,
     Json,
 };
 use runtime::PermissionMode;
 use serde::{Deserialize, Serialize};
-use std::sync::{mpsc as std_mpsc, Arc};
+use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
 
 #[derive(Debug, Deserialize, Clone)]
@@ -29,6 +29,17 @@ pub struct CreateTaskRequest {
     pub initial_message: String,
     pub model: Option<String>,
     pub tech_stack: Option<String>,
+    /// 2026-04 多维选桶字段（可选，缺省时走 tech_stack legacy 路径）
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub tech_stacks: Option<Vec<String>>,
+    #[serde(default)]
+    pub ui_libs: Option<Vec<String>>,
+    #[serde(default)]
+    pub template_name: Option<String>,
+    #[serde(default)]
+    pub explicit_buckets: Option<Vec<String>>,
     pub llm_config: Option<LlmConfigInput>,
     pub permission_config: Option<PermissionConfigInput>,
     /// B.5：可选的额外 system_prompt 段（最常见用途：backend 拼好的 RAG Top-K 样例段）。
@@ -72,6 +83,10 @@ pub async fn create_task(
         allowed_tools: pc_input.allowed_tools,
     };
 
+    // 启动期事件缓存：skills_loaded / system_prompt_built 这种一次性事件在 WS 订阅建立前发出，
+    // 否则 tokio::broadcast 会丢消息。WS handler 订阅时先 replay 这份缓存。
+    let initial_events = Arc::new(Mutex::new(Vec::new()));
+
     let task = AgentTask {
         id: task_id.clone(),
         status: TaskStatus::Pending,
@@ -80,6 +95,7 @@ pub async fn create_task(
         tx: event_tx.clone(),
         msg_tx,
         decision_tx,
+        initial_events: initial_events.clone(),
         created_at: chrono::Utc::now(),
     };
 
@@ -96,6 +112,11 @@ pub async fn create_task(
         model,
         sandbox_url: state.sandbox_url.clone(),
         tech_stack: req.tech_stack.unwrap_or_else(|| "uniapp-wot-h5".to_string()),
+        platform: req.platform,
+        tech_stacks: req.tech_stacks.unwrap_or_default(),
+        ui_libs: req.ui_libs.unwrap_or_default(),
+        template_name: req.template_name,
+        explicit_buckets: req.explicit_buckets.unwrap_or_default(),
         llm_config: req.llm_config.map(|c| crate::task_loop::LlmConfig {
             base_url: c.base_url,
             api_key: c.api_key,
@@ -107,6 +128,7 @@ pub async fn create_task(
         event_tx,
         msg_rx,
         extra_system_sections: req.extra_system_sections.unwrap_or_default(),
+        initial_events,
     });
 
     Ok(Json(CreateTaskResponse {
@@ -132,6 +154,11 @@ pub async fn add_message(
             Json(serde_json::json!({"error": "Task not found"})),
         )
     })?;
+
+    // 先 broadcast 一条 user_message：这样 backend WS 代理会立刻把它转给前端
+    // （UX：用户一回车就能看到自己的话）并持久化到 project_task_event 表
+    // （刷新页面回放时也能看到）。再丢进 msg_tx 让 task_loop 去 run_turn。
+    let _ = task.tx.send(crate::state::TaskEvent::UserMessage(req.content.clone()));
 
     task.msg_tx.send(req.content).await.map_err(|_| {
         (

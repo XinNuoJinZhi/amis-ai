@@ -10,7 +10,7 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import generate, health, internal
+from .routers import generate, health, internal, skill_authoring
 from .services.db import close_pool
 from .knowledge.loader import init_knowledge_base
 
@@ -50,6 +50,7 @@ app.add_middleware(
 app.include_router(health.router, tags=["健康检查"])
 app.include_router(generate.router, tags=["生成"])
 app.include_router(internal.router, tags=["内部"])
+app.include_router(skill_authoring.router, tags=["Skill 起草"])
 
 
 @app.get("/")

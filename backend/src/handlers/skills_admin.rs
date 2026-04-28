@@ -44,7 +44,8 @@ fn skills_root_path(state: &AppState) -> std::path::PathBuf {
 
 /// RBAC：所有 Skills 管理接口仅 admin 可用。
 /// 普通用户拿到 token 也只能在自己任务范围内操作（参见 project_ide.rs）。
-async fn require_admin(
+/// `pub(crate)`：供同 crate 的 skill_authoring handler 共享 RBAC 校验。
+pub(crate) async fn require_admin(
     state: &AppState,
     auth_user: &jwt::AuthUser,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
@@ -69,16 +70,20 @@ async fn require_admin(
 }
 
 /// 校验 bucket 名合法 + 返回桶根目录（不要求其存在，list 场景需要枚举）。
-fn bucket_dir(
+pub(crate) fn bucket_dir(
     state: &AppState,
     bucket: &str,
 ) -> Result<std::path::PathBuf, (StatusCode, Json<serde_json::Value>)> {
+    // 2026-04 维度解耦：支持 `platform-web` / `stack-react` 这类带点号的桶名。
+    // 仍拒绝 `..`、以 `.` 或 `-` 开头、含 `/`、连续多点等不安全形态。
     let valid = !bucket.is_empty()
         && bucket.len() <= 64
         && bucket
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        && !bucket.starts_with('-');
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        && !bucket.starts_with('-')
+        && !bucket.starts_with('.')
+        && !bucket.contains("..");
     if !valid {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -96,7 +101,9 @@ fn bucket_dir(
 ///   3. canonicalize 后必须仍在 bucket 子树内
 ///
 /// 文件不存在时**也允许返回路径**（write 场景需要），由调用方决定是否 fail。
-fn resolve_in_bucket(
+///
+/// `pub(crate)`：skill_authoring 的 draft/adopt 路径校验直接复用这套逻辑（传入 `.drafts/<id>/` 作为 bucket_root）。
+pub(crate) fn resolve_in_bucket(
     bucket_root: &std::path::Path,
     relpath: &str,
 ) -> Result<std::path::PathBuf, (StatusCode, Json<serde_json::Value>)> {
@@ -180,7 +187,7 @@ fn resolve_in_bucket(
     Ok(real_parent.join(filename))
 }
 
-fn extension_allowed(path: &std::path::Path) -> bool {
+pub(crate) fn extension_allowed(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| ALLOWED_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))

@@ -75,18 +75,29 @@ async def chat_completion(
 async def chat_completion_stream(
     task_type: str,
     messages: list[dict],
+    max_tokens_override: int | None = None,
+    temperature_override: float | None = None,
 ) -> AsyncIterator[str]:
-    """流式调用 LLM，逐个 token yield"""
+    """流式调用 LLM，逐个 token yield。
+    `max_tokens_override`：skill_authoring 等需要长输出（整桶 markdown）的任务会把
+    默认 max_tokens 顶上去（通常要 16k 以上），这里允许调用方强制覆盖。
+    """
     config = await get_llm_config(task_type)
 
+    temperature = (
+        temperature_override
+        if temperature_override is not None
+        else config["temperature"]
+    )
     body: dict = {
         "model": config["model"],
         "messages": messages,
-        "temperature": config["temperature"],
+        "temperature": temperature,
         "stream": True,
     }
-    if config.get("max_tokens"):
-        body["max_tokens"] = config["max_tokens"]
+    effective_max = max_tokens_override if max_tokens_override is not None else config.get("max_tokens")
+    if effective_max:
+        body["max_tokens"] = effective_max
 
     async with httpx.AsyncClient(trust_env=False) as client:
         async with client.stream(

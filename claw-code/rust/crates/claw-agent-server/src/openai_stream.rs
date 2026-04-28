@@ -88,8 +88,10 @@ struct ChunkDelta {
     content: Option<String>,
     #[serde(default)]
     reasoning: Option<String>, // ← 关键：claw-code 缺失的字段
+    // SGLang / vLLM 某些版本在无工具调用时会显式发 `"tool_calls": null`，
+    // 用 Option 兼容，消费处用 unwrap_or_default() 即可。
     #[serde(default)]
-    tool_calls: Vec<DeltaToolCall>,
+    tool_calls: Option<Vec<DeltaToolCall>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -261,8 +263,8 @@ impl OpenAiStreamClient {
                     emit_text(&mut events, event_tx, content);
                 }
 
-                // 3. tool_calls 处理（增量累积）
-                for dtc in delta.tool_calls {
+                // 3. tool_calls 处理（增量累积）—— None/null 时视为空数组
+                for dtc in delta.tool_calls.unwrap_or_default() {
                     let entry = pending_tools
                         .entry(dtc.index)
                         .or_insert_with(|| (String::new(), String::new(), String::new()));

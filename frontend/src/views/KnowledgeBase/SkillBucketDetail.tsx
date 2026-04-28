@@ -31,9 +31,11 @@ import {
   FileAddOutlined,
   FolderAddOutlined,
   ReloadOutlined,
+  RobotOutlined,
   SaveOutlined,
 } from '@ant-design/icons';
-import Editor from '@monaco-editor/react';
+import Editor, { type OnMount } from '@monaco-editor/react';
+import RewriteDrawer from './RewriteDrawer';
 import {
   deletePathInBucket,
   getSkillTree,
@@ -98,6 +100,59 @@ export default function SkillBucketDetail() {
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
 
   const [openFile, setOpenFile] = useState<OpenFile | null>(null);
+
+  // AI 改写 Drawer（Task 12）
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const editorRef = useRef<any>(null);
+  const [rewriteOpen, setRewriteOpen] = useState(false);
+  const [rewritePayload, setRewritePayload] = useState<{
+    selection: string;
+    startLine: number;
+    endLine: number;
+  } | null>(null);
+
+  const handleEditorMount: OnMount = useCallback((ed) => {
+    editorRef.current = ed;
+  }, []);
+
+  const openRewrite = useCallback(() => {
+    if (!openFile) return;
+    const ed = editorRef.current;
+    if (!ed) return;
+    const sel = ed.getSelection();
+    if (!sel || sel.isEmpty()) {
+      message.warning('请先在编辑器里选中一段文本再点 AI 改写');
+      return;
+    }
+    const model = ed.getModel();
+    if (!model) return;
+    const selectionText: string = model.getValueInRange(sel);
+    setRewritePayload({
+      selection: selectionText,
+      startLine: sel.startLineNumber,
+      endLine: sel.endLineNumber,
+    });
+    setRewriteOpen(true);
+  }, [openFile]);
+
+  const applyRewrite = useCallback(
+    (newText: string) => {
+      if (!rewritePayload || !openFile) return;
+      // 按行切片拼接，保留文件前后内容，替换选中的连续行
+      const all = openFile.content.split('\n');
+      const before = all.slice(0, rewritePayload.startLine - 1);
+      const after = all.slice(rewritePayload.endLine);
+      const inserted = newText.split('\n');
+      const merged = [...before, ...inserted, ...after].join('\n');
+      setOpenFile({
+        ...openFile,
+        content: merged,
+        dirty: true,
+      });
+      message.success('已替换选区，别忘了点保存落盘');
+    },
+    [rewritePayload, openFile]
+  );
   const [fileLoading, setFileLoading] = useState(false);
 
   const [createUnderModal, setCreateUnderModal] =
@@ -569,15 +624,27 @@ export default function SkillBucketDetail() {
                 ? `${openFile.bucket} / ${openFile.path}${openFile.dirty ? ' •' : ''}`
                 : '未打开文件'}
             </span>
-            <Button
-              type="primary"
-              size="small"
-              icon={<SaveOutlined />}
-              disabled={!openFile || !openFile.dirty || fileLoading}
-              onClick={() => void saveCurrent()}
-            >
-              保存
-            </Button>
+            <Space size={8}>
+              <Tooltip title="在编辑器里选中一段文本后，让 AI 按指定方向改写">
+                <Button
+                  size="small"
+                  icon={<RobotOutlined />}
+                  disabled={!openFile || !openFile.path.endsWith('.md')}
+                  onClick={openRewrite}
+                >
+                  AI 改写
+                </Button>
+              </Tooltip>
+              <Button
+                type="primary"
+                size="small"
+                icon={<SaveOutlined />}
+                disabled={!openFile || !openFile.dirty || fileLoading}
+                onClick={() => void saveCurrent()}
+              >
+                保存
+              </Button>
+            </Space>
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
             {openFile ? (
@@ -587,6 +654,7 @@ export default function SkillBucketDetail() {
                 language={languageForPath(openFile.path)}
                 value={openFile.content}
                 onChange={onEditorChange}
+                onMount={handleEditorMount}
                 options={{
                   fontFamily: 'var(--font-mono)',
                   fontSize: 13,
@@ -672,6 +740,21 @@ export default function SkillBucketDetail() {
           只改最后一段（同级重命名）
         </p>
       </Modal>
+
+      {/* AI 改写 Drawer（Task 12） */}
+      {openFile && rewritePayload && (
+        <RewriteDrawer
+          open={rewriteOpen}
+          onClose={() => setRewriteOpen(false)}
+          bucket={openFile.bucket}
+          path={openFile.path}
+          selection={rewritePayload.selection}
+          fullFile={openFile.content}
+          selectionStartLine={rewritePayload.startLine}
+          selectionEndLine={rewritePayload.endLine}
+          onAccept={applyRewrite}
+        />
+      )}
     </div>
   );
 }
