@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-CHAT_ENDPOINT = "http://localhost:8080/api/chat/translate"
+CHAT_ENDPOINT = "http://localhost:8000/generate"
 
 
 def _collect_types(node: Any) -> set[str]:
@@ -60,12 +60,19 @@ def compare_results(a: list[dict], b: list[dict]) -> dict:
 def run_eval(prompts_path: Path, output_path: Path, endpoint: str = CHAT_ENDPOINT) -> None:
     prompts = json.loads(prompts_path.read_text(encoding="utf-8"))
     results = []
-    with httpx.Client(timeout=120.0) as client:
+    with httpx.Client(timeout=180.0) as client:
         for case in prompts:
             print(f"[eval] {case['id']}: {case['prompt'][:40]}...")
-            resp = client.post(endpoint, json={"prompt": case["prompt"]})
+            resp = client.post(endpoint, json={"prompt": case["prompt"], "stream": False})
             resp.raise_for_status()
-            amis_json_text = resp.json().get("amis_json", "")
+            data = resp.json()
+            amis_json_value = data.get("amis_json", "")
+            # /generate 可能返回 dict（已解析）或 str（原文）；统一为 str 评分
+            amis_json_text = (
+                json.dumps(amis_json_value, ensure_ascii=False)
+                if isinstance(amis_json_value, dict)
+                else str(amis_json_value)
+            )
             results.append({**score_result(case, amis_json_text), "amis_json": amis_json_text})
     output_path.write_text(
         "\n".join(json.dumps(r, ensure_ascii=False) for r in results),

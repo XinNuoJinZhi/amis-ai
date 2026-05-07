@@ -108,7 +108,15 @@ async def ingest_rag_records(
                     affected_ids.append((new_id, f"{rec.title}\n{rec.prose}"))
 
     if vectorize:
-        from services.rag import index_code_sample  # 局部导入避免在非 vectorize 路径里拉服务依赖
+        # services.rag 内部用 from .db / from ..config 相对 import，
+        # 需要 services 在 src.services 包下才能解析 ..config，所以
+        # 把 agent/ 加进 sys.path、用 src.services.rag 这个完整路径
+        import sys
+        from pathlib import Path
+        agent_root = Path(__file__).resolve().parents[3]
+        if str(agent_root) not in sys.path:
+            sys.path.insert(0, str(agent_root))
+        from src.services.rag import index_code_sample
         for sid, summary in affected_ids:
             await index_code_sample(sid, summary)
 
