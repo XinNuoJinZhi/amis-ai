@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="amis-ai Agent",
     description="AI 辅助生成 amis JSON 配置的智能体服务",
-    version="0.1.0",
+    version="1.0.0",
     lifespan=lifespan,
 )
 

@@ -1,6 +1,6 @@
 [project]
 name = "amis-ai-agent"
-version = "0.1.0"
+version = "1.0.0"
 description = "amis-ai 智能体服务 — AI 辅助生成 amis JSON 配置"
 requires-python = ">=3.11"
 dependencies = [
