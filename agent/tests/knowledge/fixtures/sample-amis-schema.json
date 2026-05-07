@@ -1,0 +1,12 @@
+{
+  "amis_version": "6.10.0",
+  "components": {
+    "form": {
+      "props": [
+        {"name": "type", "type": "\"form\"", "description": "控件类型固定为 form", "required": true},
+        {"name": "title", "type": "string", "description": "表单标题", "required": false},
+        {"name": "api", "type": "string", "description": "提交时调用的 API", "required": false}
+      ]
+    }
+  }
+}
