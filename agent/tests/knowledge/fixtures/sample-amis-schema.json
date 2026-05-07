@@ -1,5 +1,5 @@
 {
-  "amis_version": "6.10.0",
+  "amis_version": "v6.0.0",
   "components": {
     "form": {
       "props": [

@@ -8,7 +8,7 @@ from knowledge.amis_importer.ingest_rag import RagRecord, ingest_rag_records
 async def test_ingest_rag_inserts_new_record(db_pool):
     records = [RagRecord(
         component="form",
-        amis_version="6.10.0",
+        amis_version="v6.0.0",
         title="Form 表单 示例 #1",
         prose="测试 prose",
         amis_json='{"type":"form"}',
@@ -31,7 +31,7 @@ async def test_ingest_rag_inserts_new_record(db_pool):
 async def test_ingest_rag_idempotent_by_tags(db_pool):
     records = [RagRecord(
         component="select",
-        amis_version="6.10.0",
+        amis_version="v6.0.0",
         title="Select 选择",
         prose="x",
         amis_json='{"type":"select"}',

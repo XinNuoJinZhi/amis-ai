@@ -31,9 +31,9 @@ describe("extractInterfaces", () => {
 describe("runCli", () => {
   it("把 fixture 解析结果写到指定 JSON 路径", () => {
     const out = path.join(__dirname, "tmp-amis-schema.json");
-    runCli({ inputs: [FIXTURE], output: out, version: "v6.10.0" });
+    runCli({ inputs: [FIXTURE], output: out, version: "v6.0.0" });
     const dump = JSON.parse(fs.readFileSync(out, "utf-8"));
-    expect(dump.amis_version).toBe("v6.10.0");
+    expect(dump.amis_version).toBe("v6.0.0");
     expect(Object.keys(dump.components).length).toBeGreaterThanOrEqual(2);
     fs.unlinkSync(out);
   });

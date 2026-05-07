@@ -14,7 +14,7 @@ def test_ingest_schema_writes_one_md_per_component(tmp_path):
     assert form_md.exists()
     content = form_md.read_text(encoding="utf-8")
     assert "component: form" in content
-    assert "amis_version: 6.10.0" in content
+    assert "amis_version: v6.0.0" in content
     assert "| `type` |" in content
     assert "| `title` |" in content
     assert "控件类型固定为 form" in content
