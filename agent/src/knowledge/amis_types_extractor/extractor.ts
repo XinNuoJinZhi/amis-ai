@@ -28,6 +28,7 @@ export function extractInterfaces(filePaths: string[]): AmisSchemaDump {
       const ifaceName = iface.getName();
       if (!ifaceName.endsWith("Schema")) continue;
       const compName = ifaceName.replace(/Schema$/, "").toLowerCase();
+      if (!compName) continue; // 跳过裸 "Schema" interface（空 component 名）
       components[compName] = {
         props: iface.getProperties().map((p) => ({
           name: p.getName(),

@@ -40,7 +40,7 @@ def cmd_types(cfg: ImporterConfig) -> int:
     return 0
 
 
-async def _run_docs(cfg: ImporterConfig, status: str) -> int:
+async def _run_docs(cfg: ImporterConfig, status: str, vectorize: bool) -> int:
     import asyncpg
     repo = clone_amis(cfg)
     docs_json = DUMP_DIR / "docs.json"
@@ -52,15 +52,15 @@ async def _run_docs(cfg: ImporterConfig, status: str) -> int:
     records = docs_json_to_records(docs_json, cfg.amis_version, status=status)
     pool = await asyncpg.create_pool(cfg.db_url, min_size=1, max_size=4)
     try:
-        n = await ingest_rag_records(pool, records, vectorize=True)
+        n = await ingest_rag_records(pool, records, vectorize=vectorize)
     finally:
         await pool.close()
-    print(f"[docs] 完成 ✓ 新增 {n} 条 code_samples")
+    print(f"[docs] 完成 ✓ 新增 {n} 条 code_samples（vectorize={vectorize}）")
     return 0
 
 
-def cmd_docs(cfg: ImporterConfig, status: str) -> int:
-    return asyncio.run(_run_docs(cfg, status))
+def cmd_docs(cfg: ImporterConfig, status: str, vectorize: bool) -> int:
+    return asyncio.run(_run_docs(cfg, status, vectorize))
 
 
 def main() -> int:
@@ -71,6 +71,9 @@ def main() -> int:
     p.add_argument("--status", default="auto_imported",
                    choices=["auto_imported", "approved", "pending"],
                    help="docs 轨入库时的 status（默认 auto_imported）")
+    p.add_argument("--vectorize", action="store_true",
+                   help="docs 轨入库后立即调 agent embedding 触发向量化（默认关闭，"
+                        "由 backend 已有的 spawn_vectorize 异步路径或后置脚本兜底）")
     p.add_argument("--amis-version", default=None, help="覆盖默认 amis 版本")
     args = p.parse_args()
 
@@ -83,7 +86,7 @@ def main() -> int:
         if rc != 0:
             return rc
     if args.phase in ("docs", "all"):
-        rc = cmd_docs(cfg, status=args.status)
+        rc = cmd_docs(cfg, status=args.status, vectorize=args.vectorize)
         if rc != 0:
             return rc
     return 0
