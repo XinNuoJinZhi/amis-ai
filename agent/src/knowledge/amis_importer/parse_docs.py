@@ -9,7 +9,10 @@ from typing import Iterable
 from .config import ImporterConfig
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
-_CODE_BLOCK_RE = re.compile(r"```(?:json|schema)\s*\n(.*?)```", re.DOTALL)
+_CODE_BLOCK_RE = re.compile(
+    r"```(?:json|schema)(?::[^\n]*)?\s*\n(.*?)```",
+    re.DOTALL,
+)
 
 
 @dataclass
@@ -37,7 +40,9 @@ def parse_component_doc(md_path: Path) -> ComponentDoc:
     else:
         fm, body = "", raw
 
-    title = _grep_fm(fm, "title") or md_path.stem
+    # form/index.md 这类用父目录名作 component（amis docs 把组件容器入口放 <name>/index.md）
+    component = md_path.parent.name if md_path.stem == "index" else md_path.stem
+    title = _grep_fm(fm, "title") or component
     description = _grep_fm(fm, "description") or ""
     examples = [m.group(1).strip() for m in _CODE_BLOCK_RE.finditer(body)]
     prose = _CODE_BLOCK_RE.sub("", body).strip()
@@ -45,7 +50,7 @@ def parse_component_doc(md_path: Path) -> ComponentDoc:
         prose = prose[:5000] + "\n\n…（已截断）"
 
     return ComponentDoc(
-        component=md_path.stem,
+        component=component,
         title=title,
         description=description,
         examples=examples,
