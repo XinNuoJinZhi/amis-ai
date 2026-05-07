@@ -70,6 +70,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   project.addSourceFilesAtPaths([
     `${repoDir}/packages/amis-core/src/**/*.ts`,
     `${repoDir}/packages/amis/src/renderers/**/*.tsx`,
+    `${repoDir}/packages/amis/src/Schema.ts`,
   ]);
   const inputs = project.getSourceFiles().map((sf) => sf.getFilePath());
   console.log(`[extractor] 扫描 ${inputs.length} 个文件...`);
