@@ -17,6 +17,6 @@ def test_knowledge_root_under_repo():
 
 def test_importer_config_defaults():
     cfg = ImporterConfig()
-    assert cfg.amis_version.startswith("6.")
+    assert cfg.amis_version.startswith("v6.")
     assert cfg.tmp_clone_dir.name == "amis-clone"
     assert cfg.db_url.startswith("postgresql://")

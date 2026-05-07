@@ -11,8 +11,8 @@ SKILLS_BUCKET = REPO_ROOT / "skills" / "amis-core-schema"
 SKILLS_REFS = SKILLS_BUCKET / "references"
 TYPES_EXTRACTOR_DIR = KNOWLEDGE_ROOT / "amis_types_extractor"
 
-# 1.1.0 基线：baidu/amis 6.x 最新稳定 release
-DEFAULT_AMIS_VERSION = "6.10.0"
+# 1.1.0 基线：baidu/amis v6.x 唯一稳定 release（v6.0.0；v6.10+ 均为 alpha/beta）
+DEFAULT_AMIS_VERSION = "v6.0.0"
 
 
 @dataclass
