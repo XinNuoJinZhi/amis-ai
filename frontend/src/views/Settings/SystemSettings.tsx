@@ -8,7 +8,6 @@
 //      - rag.judge.*            LLM 评委（Phase 2 激活；建议绑不同 provider）
 //      - rag.negative.*         反向飞轮（Phase 4 激活；默认 OFF 且强制 only_structural）
 //      - rag.pending_badge.*    菜单 Badge 轮询周期
-//      - rag.stats.*            统计卡片缓存 TTL
 
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -149,16 +148,6 @@ const RAG_KNOBS: KnobDef[] = [
     kind: 'int',
     min: 10,
     max: 3600,
-    step: 5,
-    phase: 0,
-  },
-  {
-    key: 'rag.stats.cache_ttl_sec',
-    label: '统计卡片缓存 TTL（秒）',
-    hint: '顶部统计卡片接口的浏览器端缓存（当前未实现服务端缓存）',
-    kind: 'int',
-    min: 0,
-    max: 300,
     step: 5,
     phase: 0,
   },

@@ -619,8 +619,7 @@ pub async fn reject_code_sample(
 /// 返回 `{pending, approved, rejected, negative, rated_count, avg_rating,
 ///        judge_covered, judge_good_pct, total}`。
 ///
-/// 带 30s 进程内缓存（由前端传参的 cache_buster 控制；配置值在 rag.stats.cache_ttl_sec）。
-/// 这里为了简单起见先不做缓存，直接查——统计卡片即使 30ms 也够用。
+/// 单条聚合查询直查 PG，毫秒级返回，不做服务端缓存。
 pub async fn stats(
     State(state): State<AppState>,
     auth: jwt::AuthUser,

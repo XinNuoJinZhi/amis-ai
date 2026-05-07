@@ -280,8 +280,7 @@ async fn main() {
          ('rag.negative.enabled',            'false',         '总闸：RAG 召回是否额外注入负例', NOW()),
          ('rag.negative.top_k',              '1',             '最多注入几条负例', NOW()),
          ('rag.negative.only_structural',    'true',          '仅注入 negative_kind=structural 的（避 LLM negation blindness）', NOW()),
-         ('rag.pending_badge.poll_interval_sec', '60',        '菜单 Badge 轮询周期（秒）', NOW()),
-         ('rag.stats.cache_ttl_sec',         '30',            '统计卡片缓存 TTL（秒）', NOW())
+         ('rag.pending_badge.poll_interval_sec', '60',        '菜单 Badge 轮询周期（秒）', NOW())
          ON CONFLICT (key) DO NOTHING"
     ).await;
 

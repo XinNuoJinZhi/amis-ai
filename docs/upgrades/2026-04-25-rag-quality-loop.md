@@ -70,7 +70,6 @@
 | `rag.negative.top_k` | `1` | 最多注入几条负例（硬上限 3） |
 | `rag.negative.only_structural` | `true` | **强制 true**（Python 端硬编码；UI 仅展示） |
 | `rag.pending_badge.poll_interval_sec` | `60` | 菜单 Badge 轮询周期 |
-| `rag.stats.cache_ttl_sec` | `30` | 统计卡片缓存 TTL（当前未实现服务端缓存，预留） |
 
 ## Python Agent 改动
 
@@ -169,5 +168,5 @@ FROM code_samples;
 
 - LLM 评委挂在 generation 同 provider 时会有 5–15% systematic bias（Plan agent 警告）；UI 已强提示，但**没有强制校验**——admin 自觉
 - `rag.judge.batch_concurrency` 用 `OnceLock<Semaphore>` 实现，**改了配置后需要重启进程**才能生效（防止 admin 反复调耗 permit）
-- audit 表无归档机制，长期可能变大；建议每季度归档老于 90 天的行（暂未实现）
-- 统计卡片是单次聚合查询直查，没有服务端缓存（`rag.stats.cache_ttl_sec` 是预留 knob，当前不读）
+- audit 表无归档机制，长期可能变大；admin 操作驱动量级很小（年增量万级），建议等真到 10 万行再加 partition / BRIN
+- 统计卡片是单次聚合查询直查，毫秒级返回，**不做缓存**（2026-05-07 清掉了 `rag.stats.cache_ttl_sec` 这条预留 knob，避免误导）
