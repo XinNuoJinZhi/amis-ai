@@ -114,10 +114,14 @@ start_one() {
     return 1
   fi
   # 用 --chdir 切换 cwd 到服务目录，让 dotenvy 能读到该服务下的 .env 文件
-  # 关于代理：保留当前 shell 的 HTTP_PROXY/HTTPS_PROXY 等，让服务继承。
-  # 内网地址（192.168.*）由 Clash 的 IP-CIDR DIRECT 规则直接出去，
-  # localhost 由 no_proxy 环境变量保证不走代理。
+  # 关于代理（局部清理，不影响当前 shell / WSL 环境）：
+  # 用 `env -u` 在子进程里去掉 *_proxy / ALL_PROXY，避免 LLM 域名（如 d.vencho.cn 这类公网域名）
+  # 被 Clash 等系统代理拦截后回 502。内网 LLM（192.168.*）原本走 Clash IP-CIDR DIRECT 也能直连，
+  # 统一清掉更省心；localhost 也不再依赖 no_proxy。
   nohup env --chdir="$cwd" \
+    -u http_proxy -u HTTP_PROXY \
+    -u https_proxy -u HTTPS_PROXY \
+    -u all_proxy -u ALL_PROXY \
     RUST_LOG=info $extra_env "$bin" \
     > "$LOG_DIR/$name.log" 2>&1 &
   local pid=$!
@@ -183,7 +187,11 @@ start_python_agent() {
     echo "❌ 找不到 uv 或 uvicorn，请先 pip install uv 或 pip install uvicorn"
     return 1
   fi
+  # 同样局部清掉 *_proxy，防止 Python agent 走 Clash 拦截 LLM/embedding 公网域名
   nohup env --chdir="$AGENT_DIR" \
+    -u http_proxy -u HTTP_PROXY \
+    -u https_proxy -u HTTPS_PROXY \
+    -u all_proxy -u ALL_PROXY \
     PYTHONUNBUFFERED=1 \
     $launcher src.main:app --host 0.0.0.0 --port "$AGENT_PORT" \
     > "$LOG_DIR/$name.log" 2>&1 &
