@@ -1,3 +1,11 @@
+//! 项目任务事件处理器：WS 转发 + REST 查询端点
+//!
+//! ## event_type 过滤策略（1.2.0）
+//!
+//! **无白名单**：`persist_event` 直接从上游 JSON 的 `type` 字段读取 event_type 写入
+//! `project_task_event` 表，不做任何过滤。所有 1.2.0 多页 vocab（详见
+//! `services/multipage_scheduler.rs` 顶部文档）均自动透传，无需在此文件追加配置。
+
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},

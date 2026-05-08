@@ -5,6 +5,33 @@
 //! - isolated + r2_prompt：N 页并发，全局 prompt 注入
 //! - isolated + r3_refactor：N 页并发→重构 session
 //! - isolated + r4_none：纯 N 页并发 baseline
+//!
+//! ## 1.2.0 多页 event_type vocab（写入 project_task_event 表）
+//!
+//! SSE/WS 转发层无白名单过滤（全转发），以下是各阶段约定的 event_type 字符串：
+//!
+//! | event_type | 说明 | 实现阶段 |
+//! |---|---|---|
+//! | `page_started:N` | 第 N 页 session 启动 | W2 R4（已落地） |
+//! | `page_done:N` | 第 N 页 session 完成 | W2 R4（已落地） |
+//! | `page_failed:N` | 第 N 页 session 失败 | W2 R4（已落地） |
+//! | `skeleton_started` | R1 第 1 阶段骨架生成开始 | W4 实现 |
+//! | `skeleton_done` | R1 第 1 阶段骨架生成完成 | W4 实现 |
+//! | `skeleton_failed` | R1 第 1 阶段骨架生成失败 | W4 实现 |
+//! | `cleanup_started` | R1 第 3 阶段收尾开始 | W4 实现 |
+//! | `cleanup_done` | R1 第 3 阶段收尾完成 | W4 实现 |
+//! | `cleanup_failed` | R1 第 3 阶段收尾失败 | W4 实现 |
+//! | `refactor_started` | R3 第 2 阶段重构 session 开始 | W5 实现 |
+//! | `refactor_done` | R3 第 2 阶段重构 session 完成 | W5 实现 |
+//! | `refactor_failed` | R3 第 2 阶段重构 session 失败 | W5 实现 |
+//! | `unified_started` | 统筹模式 session 开始 | W5 实现 |
+//! | `unified_done` | 统筹模式 session 完成 | W5 实现 |
+//! | `unified_failed` | 统筹模式 session 失败 | W5 实现 |
+//! | `route_inferred:{page_idx}:{path}` | LLM 为用户未填路由推断并写回 | 可选 |
+//! | `reuse_metric` | 完工后统计 shared/ import 次数/总组件数（百分比） | 可选 |
+//!
+//! > **注**：`page_started:N` / `page_done:N` / `page_failed:N` 带动态后缀 `:N`（页码）；
+//! > 前端匹配时需用 `startsWith("page_started:")` 等前缀匹配，而非精确等值。
 
 use crate::entity::{project_generation_task, project_task_event, project_task_page};
 use crate::services::claw_agent_client::{ClawAgentClient, CreateTaskRequest};
