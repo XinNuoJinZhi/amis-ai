@@ -129,13 +129,20 @@ async fn run_r1_skeleton(
 }
 
 async fn run_r2_prompt(
-    _state: &AppState,
-    _task: &project_generation_task::Model,
-    _pages: &[project_task_page::Model],
+    state: &AppState,
+    task: &project_generation_task::Model,
+    pages: &[project_task_page::Model],
 ) -> SchedulerResult<()> {
-    Err(SchedulerError::InvalidStrategy(
-        "r2_prompt 待 W3 实现".to_string(),
-    ))
+    use crate::services::global_prompt_builder::{render_prompt_section, scan_sandbox};
+
+    let workdir = task
+        .workdir_path
+        .as_deref()
+        .ok_or_else(|| SchedulerError::Sandbox("task.workdir_path 为空".to_string()))?;
+    let ctx = scan_sandbox(std::path::Path::new(workdir));
+    let global_section = render_prompt_section(&ctx);
+
+    run_isolated_pages_with_shared_context(state, task, pages, Some(&global_section)).await
 }
 
 async fn run_r3_refactor(
