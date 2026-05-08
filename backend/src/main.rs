@@ -315,6 +315,19 @@ async fn main() {
          WHERE tech_stacks = '{}' AND tech_stack IS NOT NULL"
     ).await;
 
+    // 1.2.0 多页扩展：执行策略 + 复用策略 + 页数
+    let _ = db.execute_unprepared(
+        "ALTER TABLE project_generation_task
+            ADD COLUMN IF NOT EXISTS execution_strategy varchar(16) NOT NULL DEFAULT 'unified',
+            ADD COLUMN IF NOT EXISTS reuse_strategy varchar(16),
+            ADD COLUMN IF NOT EXISTS page_count integer NOT NULL DEFAULT 1"
+    ).await;
+    let _ = db.execute_unprepared(
+        "CREATE INDEX IF NOT EXISTS idx_pgt_strategy
+         ON project_generation_task (execution_strategy, reuse_strategy)
+         WHERE execution_strategy = 'isolated'"
+    ).await;
+
     // 任务级 LLM 选择 + 供应商能力分档的增量 migration
     let _ = db.execute_unprepared(
         "ALTER TABLE project_generation_task
