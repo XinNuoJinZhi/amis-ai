@@ -19,6 +19,17 @@ use crate::services::{
 use crate::utils::jwt;
 use crate::AppState;
 
+/// 1.2.0 多页：单页输入（amis JSON + 可选路由路径）
+#[derive(Deserialize, Debug)]
+pub struct PageInput {
+    pub amis_json: String,
+    pub route_path: Option<String>,
+}
+
+fn default_execution_strategy() -> String {
+    "unified".to_string()
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateTaskPayload {
     pub amis_json: String,
@@ -59,6 +70,16 @@ pub struct CreateTaskPayload {
     /// - true：先试翻译器，fully_supported 就跳过 LLM；降级则回退 LLM
     #[serde(default)]
     pub enable_translator: Option<bool>,
+    // ── 1.2.0 多页字段 ──────────────────────────────────────────────────────
+    /// N 段 amis JSON。None 走旧的单页路径（兼容旧调用方）
+    #[serde(default)]
+    pub pages: Option<Vec<PageInput>>,
+    /// 执行策略：unified / isolated；缺省 unified
+    #[serde(default = "default_execution_strategy")]
+    pub execution_strategy: String,
+    /// 复用策略（仅 isolated 时有意义）
+    #[serde(default)]
+    pub reuse_strategy: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -215,6 +236,10 @@ pub async fn create_task(
         tech_stacks: Set(tech_stacks_arr.clone()),
         ui_libs: Set(ui_libs_arr.clone()),
         selected_skill_buckets: Set(explicit_buckets_arr.clone()),
+        // 1.2.0 多页字段
+        execution_strategy: Set(payload.execution_strategy.clone()),
+        reuse_strategy: Set(payload.reuse_strategy.clone()),
+        page_count: Set(payload.pages.as_ref().map(|p| p.len() as i32).unwrap_or(1)),
         ..Default::default()
     };
 
@@ -231,6 +256,33 @@ pub async fn create_task(
 
     let task_id = saved.id;
     let task_id_str = format!("task-{}", task_id);
+
+    // 1.2.0：如果传了 pages，写入 project_task_page 子表
+    if let Some(pages_input) = &payload.pages {
+        use crate::entity::project_task_page;
+        let now_pages = chrono::Local::now().naive_local();
+        for (idx, p) in pages_input.iter().enumerate() {
+            let route = match &p.route_path {
+                Some(r) if !r.trim().is_empty() => r.trim().to_string(),
+                _ => crate::services::route_inferer_client::infer_route_path(
+                    &p.amis_json,
+                    idx as i32,
+                )
+                .await,
+            };
+            let page_active = project_task_page::ActiveModel {
+                task_id: Set(task_id),
+                page_idx: Set(idx as i32),
+                route_path: Set(route),
+                amis_json: Set(p.amis_json.clone()),
+                status: Set("pending".to_string()),
+                created_at: Set(now_pages),
+                updated_at: Set(now_pages),
+                ..Default::default()
+            };
+            let _ = page_active.insert(&state.db).await;
+        }
+    }
 
     // 2026-04-25 任务追踪日志：初始化归档目录（mode=disabled 时是 no-op）
     let _ = crate::services::tracelog::init_task_tracelog(&state, task_id).await;
