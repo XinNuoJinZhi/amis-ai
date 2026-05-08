@@ -328,6 +328,30 @@ async fn main() {
          WHERE execution_strategy = 'isolated'"
     ).await;
 
+    // 1.2 多页面飞轮：项目任务页面表
+    let _ = db.execute_unprepared(
+        "CREATE TABLE IF NOT EXISTS project_task_page (
+            id              SERIAL PRIMARY KEY,
+            task_id         INT NOT NULL REFERENCES project_generation_task(id) ON DELETE CASCADE,
+            page_idx        INT NOT NULL,
+            route_path      VARCHAR(255) NOT NULL,
+            amis_json       TEXT NOT NULL,
+            claw_session_id VARCHAR(64),
+            status          VARCHAR(16) NOT NULL DEFAULT 'pending',
+            started_at      TIMESTAMPTZ,
+            finished_at     TIMESTAMPTZ,
+            error_msg       TEXT,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (task_id, page_idx),
+            UNIQUE (task_id, route_path)
+        )"
+    ).await;
+    let _ = db.execute_unprepared(
+        "CREATE INDEX IF NOT EXISTS idx_ptp_task_status
+         ON project_task_page (task_id, status)"
+    ).await;
+
     // 任务级 LLM 选择 + 供应商能力分档的增量 migration
     let _ = db.execute_unprepared(
         "ALTER TABLE project_generation_task
