@@ -338,11 +338,11 @@ async fn main() {
             amis_json       TEXT NOT NULL,
             claw_session_id VARCHAR(64),
             status          VARCHAR(16) NOT NULL DEFAULT 'pending',
-            started_at      TIMESTAMPTZ,
-            finished_at     TIMESTAMPTZ,
+            started_at      TIMESTAMP,
+            finished_at     TIMESTAMP,
             error_msg       TEXT,
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at      TIMESTAMP NOT NULL DEFAULT NOW(),
             UNIQUE (task_id, page_idx),
             UNIQUE (task_id, route_path)
         )"
@@ -350,6 +350,15 @@ async fn main() {
     let _ = db.execute_unprepared(
         "CREATE INDEX IF NOT EXISTS idx_ptp_task_status
          ON project_task_page (task_id, status)"
+    ).await;
+    // 1.2 修复：早期建表用了 TIMESTAMPTZ 跟 entity DateTime(NaiveDateTime) 不兼容，
+    // 转回 TIMESTAMP（PG 自动转换，UTC 时间保留，丢时区无影响因为项目惯例不用 TZ）
+    let _ = db.execute_unprepared(
+        "ALTER TABLE project_task_page
+            ALTER COLUMN created_at TYPE TIMESTAMP,
+            ALTER COLUMN updated_at TYPE TIMESTAMP,
+            ALTER COLUMN started_at TYPE TIMESTAMP,
+            ALTER COLUMN finished_at TYPE TIMESTAMP"
     ).await;
 
     // 任务级 LLM 选择 + 供应商能力分档的增量 migration
