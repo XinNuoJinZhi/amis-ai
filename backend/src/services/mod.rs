@@ -1,6 +1,7 @@
 pub mod amis_translator_client;
 pub mod claw_agent_client;
 pub mod llm_selector;
+pub mod multipage_scheduler;
 pub mod quality_judge;
 pub mod route_inferer_client;
 pub mod sandbox_client;
