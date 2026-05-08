@@ -10,7 +10,7 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import generate, health, internal, skill_authoring, route_infer
+from .routers import generate, health, internal, skill_authoring, route_infer, multipage_record
 from .services.db import close_pool
 from .knowledge.loader import init_knowledge_base
 
@@ -52,6 +52,7 @@ app.include_router(generate.router, tags=["生成"])
 app.include_router(internal.router, tags=["内部"])
 app.include_router(skill_authoring.router, tags=["Skill 起草"])
 app.include_router(route_infer.router, tags=["路由推断"])
+app.include_router(multipage_record.router, tags=["多页记录"])
 
 
 @app.get("/")
