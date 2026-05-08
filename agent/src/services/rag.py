@@ -223,6 +223,10 @@ async def search_code_samples(
     weighting_enabled: bool = False,
     thumbs_mode: str = "tiebreaker",   # off / tiebreaker / boost
     hit_count_enabled: bool = False,
+    # 1.2.0 多页过滤（硬过滤：multipage_filter / execution_strategy / reuse_strategy）
+    multipage_filter: bool = False,
+    execution_strategy: Optional[str] = None,    # 'isolated' / 'unified' / None
+    reuse_strategy: Optional[str] = None,        # 'r1_skeleton' / 'r2_prompt' / 'r3_refactor' / 'r4_none' / None
 ) -> List[dict]:
     """检索相似的 code_sample（2026-04 起支持质量闭环可配置过滤 + 加权）。
 
@@ -239,6 +243,15 @@ async def search_code_samples(
         [{id, ..., similarity, tag_boost, thumbs_boost, hit_boost, score}]
         按 score 降序
     """
+    # 1.2.0 多页 strategy 白名单校验（防 SQL 注入）
+    _VALID_EXEC = {"isolated", "unified"}
+    _VALID_REUSE = {"r1_skeleton", "r2_prompt", "r3_refactor", "r4_none"}
+
+    if execution_strategy and execution_strategy not in _VALID_EXEC:
+        raise ValueError(f"invalid execution_strategy: {execution_strategy}")
+    if reuse_strategy and reuse_strategy not in _VALID_REUSE:
+        raise ValueError(f"invalid reuse_strategy: {reuse_strategy}")
+
     pool = await get_pool()
 
     # 2026-04 性能：空库直接返回；避免白白调 embedding 模型
@@ -256,16 +269,17 @@ async def search_code_samples(
 
     where_status = "AND status = 'approved'" if only_approved else ""
     # 维度过滤（若任一数组非空，则必须至少命中一个；全为空 → 不过滤，退化为纯向量检索）
-    where_dim = ""
-    if any_dim:
-        where_dim = (
-            "AND (\n"
-            "  ($3::text[] <> '{}' AND platforms && $3::text[])\n"
-            "  OR ($4::text[] <> '{}' AND tech_stacks && $4::text[])\n"
-            "  OR ($5::text[] <> '{}' AND ui_libs && $5::text[])\n"
-            "  OR ($6::text IS NOT NULL AND tech_stack = $6)\n"
-            ")"
-        )
+    # 注意：$6（legacy_tech_stack）必须在 WHERE 子句中**无条件**出现，避免 asyncpg 类型推断失败
+    where_dim = (
+        "AND (\n"
+        "  ($3::text[] <> '{}' AND platforms && $3::text[])\n"
+        "  OR ($4::text[] <> '{}' AND tech_stacks && $4::text[])\n"
+        "  OR ($5::text[] <> '{}' AND ui_libs && $5::text[])\n"
+        "  OR ($6::text IS NOT NULL AND tech_stack = $6)\n"
+        ")"
+        if any_dim
+        else "AND ($6::text IS NULL OR tech_stack = $6)"  # 当无维度过滤时，$6 仍需出现但条件短路
+    )
 
     # 质量硬过滤（生产检索永远排除 is_negative=true 的样本——负例走独立召回接口）
     #
@@ -285,6 +299,19 @@ async def search_code_samples(
     verdict_rank: Optional[int] = None
     if min_verdict is not None and min_verdict in _VERDICT_RANK:
         verdict_rank = _VERDICT_RANK[min_verdict]
+
+    # 1.2.0 多页硬过滤：按 multipage / execution_strategy / reuse_strategy tags
+    where_multipage = ""
+    if multipage_filter or execution_strategy or reuse_strategy:
+        where_clauses = []
+        if multipage_filter:
+            where_clauses.append("'multipage:1' = ANY(tags)")
+        if execution_strategy:
+            where_clauses.append(f"'execution_strategy:{execution_strategy}' = ANY(tags)")
+        if reuse_strategy:
+            where_clauses.append(f"'reuse_strategy:{reuse_strategy}' = ANY(tags)")
+        if where_clauses:
+            where_multipage = "AND (" + " AND ".join(where_clauses) + ")"
 
     # 软加权：thumbs_boost / hit_boost 由 weighting_enabled + 子开关共同控制
     if weighting_enabled and thumbs_mode == "boost":
@@ -335,6 +362,7 @@ async def search_code_samples(
               {where_status}
               {where_dim}
               {where_quality}
+              {where_multipage}
         )
         SELECT *, cos_sim + tag_boost + thumbs_boost + hit_boost AS score
         FROM scored
