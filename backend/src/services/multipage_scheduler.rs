@@ -118,14 +118,168 @@ async fn run_unified(
     ))
 }
 
-async fn run_r1_skeleton(
-    _state: &AppState,
-    _task: &project_generation_task::Model,
-    _pages: &[project_task_page::Model],
+async fn run_skeleton_stage(
+    state: &AppState,
+    task: &project_generation_task::Model,
+    pages: &[project_task_page::Model],
+) -> SchedulerResult<String> {
+    record_page_event(state, task.id, "skeleton_started", serde_json::json!({})).await;
+
+    // 拼骨架 prompt（替换 PAGE_LIST_SUMMARY + ROUTE_TABLE）
+    let template = include_str!(
+        "../../../claw-code/rust/crates/claw-agent-server/prompts/scaffold_skeleton.md"
+    );
+    let page_summary = pages
+        .iter()
+        .map(|p| {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&p.amis_json).unwrap_or(serde_json::Value::Null);
+            let ptype = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+            let title = parsed.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            format!("- 路由 `{}`：type={} title={}", p.route_path, ptype, title)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let route_table = pages
+        .iter()
+        .map(|p| format!("- {}", p.route_path))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt = template
+        .replace("{{PAGE_LIST_SUMMARY}}", &page_summary)
+        .replace("{{ROUTE_TABLE}}", &route_table);
+
+    let claw = ClawAgentClient::new(state.http_client.clone(), state.claw_agent_url.clone());
+    let workdir = task
+        .workdir_path
+        .as_deref()
+        .ok_or_else(|| SchedulerError::Sandbox("workdir 缺失".to_string()))?;
+    let sandbox_id = task
+        .sandbox_id
+        .as_deref()
+        .ok_or_else(|| SchedulerError::Sandbox("sandbox_id 缺失".to_string()))?;
+
+    let req = CreateTaskRequest {
+        workdir: workdir.to_string(),
+        sandbox_id: sandbox_id.to_string(),
+        initial_message: prompt,
+        ..Default::default()
+    };
+    match claw.create_task(req).await {
+        Ok(resp) => {
+            record_page_event(
+                state,
+                task.id,
+                "skeleton_done",
+                serde_json::json!({"session_id": resp.id}),
+            )
+            .await;
+            Ok(resp.id)
+        }
+        Err(e) => {
+            let err = e.to_string();
+            record_page_event(
+                state,
+                task.id,
+                "skeleton_failed",
+                serde_json::json!({"error": err.clone()}),
+            )
+            .await;
+            Err(SchedulerError::ClawAgent(err))
+        }
+    }
+}
+
+async fn run_cleanup_stage(
+    state: &AppState,
+    task: &project_generation_task::Model,
+    pages: &[project_task_page::Model],
 ) -> SchedulerResult<()> {
-    Err(SchedulerError::InvalidStrategy(
-        "r1_skeleton 待 W4 实现".to_string(),
-    ))
+    record_page_event(state, task.id, "cleanup_started", serde_json::json!({})).await;
+
+    let route_list = pages
+        .iter()
+        .map(|p| format!("- {}", p.route_path))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt = format!(
+        "项目已完成 {} 页生成 + 骨架。请：\n\
+         1. 跑 lint（如 eslint）\n\
+         2. 检查所有 src/pages/*.vue 中的 uni.navigateTo / uni.switchTab 路径是否存在于 pages.json\n\
+         3. 检查所有 import 路径是否能解析（不存在的文件路径报错）\n\
+         4. 启动 dev server 验证不报错\n\n\
+         路由表：\n{}",
+        pages.len(),
+        route_list,
+    );
+
+    let claw = ClawAgentClient::new(state.http_client.clone(), state.claw_agent_url.clone());
+    let workdir = task
+        .workdir_path
+        .as_deref()
+        .ok_or_else(|| SchedulerError::Sandbox("workdir 缺失".to_string()))?;
+    let sandbox_id = task
+        .sandbox_id
+        .as_deref()
+        .ok_or_else(|| SchedulerError::Sandbox("sandbox_id 缺失".to_string()))?;
+
+    let req = CreateTaskRequest {
+        workdir: workdir.to_string(),
+        sandbox_id: sandbox_id.to_string(),
+        initial_message: prompt,
+        ..Default::default()
+    };
+    match claw.create_task(req).await {
+        Ok(resp) => {
+            record_page_event(
+                state,
+                task.id,
+                "cleanup_done",
+                serde_json::json!({"session_id": resp.id}),
+            )
+            .await;
+            Ok(())
+        }
+        Err(e) => {
+            let err = e.to_string();
+            record_page_event(
+                state,
+                task.id,
+                "cleanup_failed",
+                serde_json::json!({"error": err.clone()}),
+            )
+            .await;
+            Err(SchedulerError::ClawAgent(err))
+        }
+    }
+}
+
+async fn run_r1_skeleton(
+    state: &AppState,
+    task: &project_generation_task::Model,
+    pages: &[project_task_page::Model],
+) -> SchedulerResult<()> {
+    use crate::services::global_prompt_builder::{render_prompt_section, scan_sandbox};
+
+    // 阶段 1：骨架
+    let _skeleton_session = run_skeleton_stage(state, task, pages).await?;
+
+    // 阶段 2：扫骨架产物 → 拼带「骨架已生成」上下文的 shared 段 → N 页并发
+    let workdir = task
+        .workdir_path
+        .as_deref()
+        .ok_or_else(|| SchedulerError::Sandbox("workdir 缺失".to_string()))?;
+    let ctx = scan_sandbox(std::path::Path::new(workdir));
+    let mut shared = render_prompt_section(&ctx);
+    shared.push_str(
+        "\n\n**注意：** 上述清单是骨架阶段刚生成的，**必须 import 不准重复造**。\n",
+    );
+    run_isolated_pages_with_shared_context(state, task, pages, Some(&shared)).await?;
+
+    // 阶段 3：收尾
+    run_cleanup_stage(state, task, pages).await?;
+
+    Ok(())
 }
 
 async fn run_r2_prompt(
