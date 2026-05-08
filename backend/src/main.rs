@@ -481,6 +481,8 @@ async fn main() {
         .route("/api/projects/tasks/:id/events/history", get(handlers::project_events::list_events_history))
         .route("/api/projects/tasks/:id/dev-status", get(handlers::project_events::get_dev_status))
         .route("/api/projects/tasks/:id/pages", get(handlers::project_events::list_task_pages))
+        .route("/api/projects/tasks/:id/db-pages", get(handlers::project_pages::list_db_pages))
+        .route("/api/projects/tasks/:id/reuse-rate", get(handlers::project_pages::get_reuse_rate))
         .route("/api/projects/tasks/:id/permission-decision", post(handlers::project_events::post_permission_decision))
         .route("/api/projects/tasks/:id/runtime-error", post(handlers::project_events::post_runtime_error))
         // 2026-04-25 任务追踪日志归档查询 + 下载（任务归属校验）

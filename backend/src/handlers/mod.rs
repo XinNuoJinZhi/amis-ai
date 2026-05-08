@@ -5,6 +5,7 @@ pub mod template;
 pub mod project_generation;
 pub mod project_events;
 pub mod project_ide;
+pub mod project_pages;
 pub mod skills_admin;
 pub mod skill_authoring;
 pub mod code_samples;

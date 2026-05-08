@@ -41,7 +41,7 @@ UNIFIED_DONE=$(echo "$EVENTS" | jq '[.[] | select(.event_type=="unified_done")] 
 [ "$UNIFIED_DONE" -ge 1 ] || { echo "❌ unified_done 缺失"; exit 1; }
 echo "✅ unified_done 事件"
 
-PAGES=$(curl -s "$API/projects/tasks/$TASK_ID/pages" -H "Authorization: Bearer $TOKEN")
+PAGES=$(curl -s "$API/projects/tasks/$TASK_ID/db-pages" -H "Authorization: Bearer $TOKEN")
 DONE=$(echo "$PAGES" | jq '[.[] | select(.status=="done")] | length')
 [ "$DONE" -ge 4 ] || { echo "❌ 4 页 done 失败：$DONE/4"; exit 1; }
 echo "✅ 4 页全 done"

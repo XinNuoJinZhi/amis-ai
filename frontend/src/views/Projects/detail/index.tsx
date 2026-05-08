@@ -34,6 +34,7 @@ import TerminalPanel from './panels/TerminalPanel';
 import ConsolePanel from './panels/ConsolePanel';
 import LogsPanel from './panels/LogsPanel';
 import { ExecutionDetailsPanel } from './panels/ExecutionDetailsPanel';
+import PagesPanel from './panels/PagesPanel';
 
 const STATUS_TEXT: Record<string, string> = {
   pending: '待启动',
@@ -142,6 +143,7 @@ function EditorView({
   onRefresh,
   adopt,
   taskStatus,
+  pageCount,
 }: {
   taskId: number;
   previewPort: number | null;
@@ -152,6 +154,8 @@ function EditorView({
   onRefresh?: () => Promise<void> | void;
   adopt?: PreviewAdoptInfo;
   taskStatus?: string | null;
+  /** 多页任务的页面数量；>1 时显示 PagesPanel */
+  pageCount?: number;
 }) {
   const [activity, setActivity] = useState<'chat' | 'files'>('files');
   const bottomTab = useIdeStore((s) => s.bottomTab);
@@ -257,7 +261,11 @@ function EditorView({
         })}
       </div>
 
-      <div style={{ width: activity === 'chat' ? 380 : 260, flexShrink: 0, background: c.bg, minHeight: 0 }}>
+      <div style={{ width: activity === 'chat' ? 380 : 260, flexShrink: 0, background: c.bg, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        {/* 多页面任务进度：page_count > 1 时显示 */}
+        {pageCount != null && pageCount > 1 && (
+          <PagesPanel taskId={taskId} />
+        )}
         {activity === 'files' ? (
           <FileTreePanel taskId={taskId} enabled />
         ) : (
@@ -549,6 +557,7 @@ export default function ProjectDetail() {
           onRefresh={refreshHistory}
           adopt={adoptInfo}
           taskStatus={task.status}
+          pageCount={task.page_count}
         />
       )}
 

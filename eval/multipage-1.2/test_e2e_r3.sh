@@ -35,7 +35,7 @@ echo "Task created: $TASK_ID"
 
 sleep 90
 
-PAGES=$(curl -s "$API/projects/tasks/$TASK_ID/pages" -H "Authorization: Bearer $TOKEN")
+PAGES=$(curl -s "$API/projects/tasks/$TASK_ID/db-pages" -H "Authorization: Bearer $TOKEN")
 DONE=$(echo "$PAGES" | jq '[.[] | select(.status=="done")] | length')
 [ "$DONE" -ge 3 ] || { echo "❌ 3 页 done 失败：$DONE/3"; exit 1; }
 echo "✅ 3 页全 done"

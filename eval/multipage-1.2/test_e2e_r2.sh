@@ -38,7 +38,7 @@ echo "Task created: $TASK_ID"
 sleep 60
 
 # 3. 查 pages 状态
-PAGES=$(curl -s "$API/projects/tasks/$TASK_ID/pages" -H "Authorization: Bearer $TOKEN")
+PAGES=$(curl -s "$API/projects/tasks/$TASK_ID/db-pages" -H "Authorization: Bearer $TOKEN")
 echo "$PAGES" | jq '.'
 DONE_COUNT=$(echo "$PAGES" | jq '[.[] | select(.status == "done")] | length')
 [ "$DONE_COUNT" -ge 3 ] || { echo "❌ 期望 3 页 done，实际 $DONE_COUNT"; exit 1; }
