@@ -109,13 +109,103 @@ pub async fn dispatch(
 // ─── 5 个策略 stub（每个在后续 Task 里替换为真实实现）
 
 async fn run_unified(
-    _state: &AppState,
-    _task: &project_generation_task::Model,
-    _pages: &[project_task_page::Model],
+    state: &AppState,
+    task: &project_generation_task::Model,
+    pages: &[project_task_page::Model],
 ) -> SchedulerResult<()> {
-    Err(SchedulerError::InvalidStrategy(
-        "unified 待 W5 实现".to_string(),
-    ))
+    // 统筹模式建议 ≤ 5 页（避免 token 爆炸），超过强制 isolated
+    if pages.len() > 5 {
+        return Err(SchedulerError::InvalidStrategy(format!(
+            "统筹模式建议页数 ≤ 5，当前 {}（请改用 isolated）",
+            pages.len()
+        )));
+    }
+
+    record_page_event(
+        state,
+        task.id,
+        "unified_started",
+        serde_json::json!({"page_count": pages.len()}),
+    )
+    .await;
+
+    let template = include_str!(
+        "../../../claw-code/rust/crates/claw-agent-server/prompts/multipage_unified.md"
+    );
+    let route_table = pages
+        .iter()
+        .map(|p| format!("- {}", p.route_path))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let amis_jsons = pages
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            format!(
+                "### 页面 {} (路由 {})\n```json\n{}\n```",
+                i + 1,
+                p.route_path,
+                p.amis_json
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let prompt = template
+        .replace("{{ROUTE_TABLE}}", &route_table)
+        .replace("{{PAGE_AMIS_JSONS}}", &amis_jsons);
+
+    let claw = ClawAgentClient::new(state.http_client.clone(), state.claw_agent_url.clone());
+    let workdir = task
+        .workdir_path
+        .as_deref()
+        .ok_or_else(|| SchedulerError::Sandbox("workdir 缺失".to_string()))?;
+    let sandbox_id = task
+        .sandbox_id
+        .as_deref()
+        .ok_or_else(|| SchedulerError::Sandbox("sandbox_id 缺失".to_string()))?;
+
+    let req = CreateTaskRequest {
+        workdir: workdir.to_string(),
+        sandbox_id: sandbox_id.to_string(),
+        initial_message: prompt,
+        ..Default::default()
+    };
+    match claw.create_task(req).await {
+        Ok(resp) => {
+            // 统筹一次完成，标全部 page status=done
+            let now = chrono::Utc::now().naive_utc();
+            for page in pages {
+                let active = project_task_page::ActiveModel {
+                    id: Set(page.id),
+                    status: Set("done".to_string()),
+                    claw_session_id: Set(Some(resp.id.clone())),
+                    finished_at: Set(Some(now)),
+                    updated_at: Set(now),
+                    ..Default::default()
+                };
+                let _ = active.update(&state.db).await;
+            }
+            record_page_event(
+                state,
+                task.id,
+                "unified_done",
+                serde_json::json!({"session_id": resp.id}),
+            )
+            .await;
+            Ok(())
+        }
+        Err(e) => {
+            let err = e.to_string();
+            record_page_event(
+                state,
+                task.id,
+                "unified_failed",
+                serde_json::json!({"error": err.clone()}),
+            )
+            .await;
+            Err(SchedulerError::ClawAgent(err))
+        }
+    }
 }
 
 async fn run_skeleton_stage(
@@ -300,13 +390,60 @@ async fn run_r2_prompt(
 }
 
 async fn run_r3_refactor(
-    _state: &AppState,
-    _task: &project_generation_task::Model,
-    _pages: &[project_task_page::Model],
+    state: &AppState,
+    task: &project_generation_task::Model,
+    pages: &[project_task_page::Model],
 ) -> SchedulerResult<()> {
-    Err(SchedulerError::InvalidStrategy(
-        "r3_refactor 待 W5 实现".to_string(),
-    ))
+    // 阶段 1：N 页并发（同 R4 baseline，无共享）
+    run_isolated_pages_with_shared_context(state, task, pages, None).await?;
+
+    // 阶段 2：重构 session
+    record_page_event(state, task.id, "refactor_started", serde_json::json!({})).await;
+
+    let prompt = include_str!(
+        "../../../claw-code/rust/crates/claw-agent-server/prompts/scaffold_refactor.md"
+    )
+    .to_string();
+
+    let claw = ClawAgentClient::new(state.http_client.clone(), state.claw_agent_url.clone());
+    let workdir = task
+        .workdir_path
+        .as_deref()
+        .ok_or_else(|| SchedulerError::Sandbox("workdir 缺失".to_string()))?;
+    let sandbox_id = task
+        .sandbox_id
+        .as_deref()
+        .ok_or_else(|| SchedulerError::Sandbox("sandbox_id 缺失".to_string()))?;
+
+    let req = CreateTaskRequest {
+        workdir: workdir.to_string(),
+        sandbox_id: sandbox_id.to_string(),
+        initial_message: prompt,
+        ..Default::default()
+    };
+    match claw.create_task(req).await {
+        Ok(resp) => {
+            record_page_event(
+                state,
+                task.id,
+                "refactor_done",
+                serde_json::json!({"session_id": resp.id}),
+            )
+            .await;
+            Ok(())
+        }
+        Err(e) => {
+            let err = e.to_string();
+            record_page_event(
+                state,
+                task.id,
+                "refactor_failed",
+                serde_json::json!({"error": err.clone()}),
+            )
+            .await;
+            Err(SchedulerError::ClawAgent(err))
+        }
+    }
 }
 
 async fn run_r4_baseline(
