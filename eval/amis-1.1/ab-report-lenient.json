@@ -1,0 +1,9 @@
+{
+  "scoring": "lenient",
+  "a_adopt_rate": 0.85,
+  "b_adopt_rate": 0.85,
+  "delta_pp": 0.0,
+  "a_pass": 17,
+  "b_pass": 17,
+  "n": 20
+}

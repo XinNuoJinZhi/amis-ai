@@ -1,0 +1,22 @@
+[
+  {"id": "p01", "prompt": "做一个用户登录表单，包含用户名、密码、记住我复选框", "expected_components": ["form", "input-text", "switch", "button"]},
+  {"id": "p02", "prompt": "新建订单的表单，字段：订单号、客户名（远程搜索）、金额、备注", "expected_components": ["form", "input-text", "select", "input-number", "textarea"]},
+  {"id": "p03", "prompt": "用户列表页，要求：分页、搜索、新增、编辑、删除", "expected_components": ["page", "crud", "table", "button", "dialog"]},
+  {"id": "p04", "prompt": "三步注册向导：1. 手机号验证 2. 设置密码 3. 完善信息", "expected_components": ["wizard", "form", "input-text"]},
+  {"id": "p05", "prompt": "卡片布局展示商品列表，每张卡片含图片、标题、价格、加入购物车按钮", "expected_components": ["cards", "button"]},
+  {"id": "p06", "prompt": "管理后台首页：左侧菜单 + 顶部 Tab 切换数据看板", "expected_components": ["page", "tabs"]},
+  {"id": "p07", "prompt": "选择部门的级联下拉，三级树形结构", "expected_components": ["select"]},
+  {"id": "p08", "prompt": "上传头像的表单字段，支持裁剪", "expected_components": ["form", "input-image"]},
+  {"id": "p09", "prompt": "查询条件区：日期范围、状态多选、关键字搜索", "expected_components": ["form", "input-date-range", "checkboxes", "input-text"]},
+  {"id": "p10", "prompt": "弹窗里编辑单条记录，关闭弹窗后刷新表格", "expected_components": ["dialog", "form", "crud"]},
+  {"id": "p11", "prompt": "时间轴展示订单状态变更", "expected_components": ["timeline"]},
+  {"id": "p12", "prompt": "二维码生成：输入文本，生成二维码并支持下载", "expected_components": ["form", "input-text", "qr-code", "button"]},
+  {"id": "p13", "prompt": "价格输入框带货币符号前缀和单位后缀", "expected_components": ["input-number"]},
+  {"id": "p14", "prompt": "树形选择控件：选择菜单权限，支持全选/反选/搜索", "expected_components": ["tree-select"]},
+  {"id": "p15", "prompt": "动态表单：根据上一题答案显示不同的下一题", "expected_components": ["form", "input-text", "select", "switch"]},
+  {"id": "p16", "prompt": "多 Tab 表单，每个 Tab 一组字段，提交时合并", "expected_components": ["form", "tabs", "input-text"]},
+  {"id": "p17", "prompt": "对话框确认：删除前提示「确定吗？」", "expected_components": ["dialog", "button"]},
+  {"id": "p18", "prompt": "下拉按钮：导出（PDF/Excel/CSV 三选一）", "expected_components": ["dropdown-button", "action"]},
+  {"id": "p19", "prompt": "表格行操作列：编辑、删除、查看详情", "expected_components": ["table", "action", "button"]},
+  {"id": "p20", "prompt": "嵌入富文本编辑器，支持 Markdown 切换", "expected_components": ["form", "input-rich-text"]}
+]

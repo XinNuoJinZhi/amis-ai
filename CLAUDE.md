@@ -119,6 +119,7 @@ cd agent && uv run uvicorn src.main:app --reload --port 8000
 | [2026-04-25-rag-quality-loop.md](docs/upgrades/2026-04-25-rag-quality-loop.md) | RAG 质量闭环（thumbs/rating/LLM 评委/负例 + A/B 工具） |
 | [2026-04-25-tracelog.md](docs/upgrades/2026-04-25-tracelog.md) | 任务追踪日志（每任务 FS 归档：events / LLM 入参+响应 / Skills+RAG 全文快照 / analysis_input.md） |
 | [2026-04-27-conversation-streaming.md](docs/upgrades/2026-04-27-conversation-streaming.md) | 通用 AI 对话：SSE 流式打字机 + 多会话 DB 持久化（左侧会话栏 / 重命名 / 删除） |
+| [2026-05-07-amis-knowledge-completion.md](docs/upgrades/2026-05-07-amis-knowledge-completion.md) | 1.1.0 · Amis 知识双轨补全（175 schema + 148 RAG 样例 + 100% embedding；接受 0pp delta + 上线 thumbs 兜底） |
 
 ### 规范与清单
 

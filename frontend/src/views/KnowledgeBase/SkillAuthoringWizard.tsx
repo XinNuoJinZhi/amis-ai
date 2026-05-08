@@ -355,7 +355,10 @@ export default function SkillAuthoringWizard() {
   const bucketOptions = useMemo(
     () =>
       bucketList.map((b) => ({
-        label: `${b.dir_name}  ·  ${b.display_name}`,
+        label:
+          b.display_name && b.display_name !== b.dir_name
+            ? `${b.dir_name}  ·  ${b.display_name}`
+            : b.dir_name,
         value: b.dir_name,
       })),
     [bucketList]
@@ -509,6 +512,7 @@ function StepIntent({
           <Radio.Group
             value={form.mode}
             onChange={(e) => patch({ mode: e.target.value as AuthoringMode })}
+            buttonStyle="solid"
           >
             <Radio.Button value="draft_bucket">从零起草</Radio.Button>
             <Radio.Button value="clone_bucket">仿写已有桶</Radio.Button>
