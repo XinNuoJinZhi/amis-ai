@@ -452,6 +452,43 @@ pub async fn create_task(
         }
     }
 
+    // 1.2.0 多页：跳过单 claw-agent 主 session，spawn multipage_scheduler::dispatch
+    // 跑独立 N 个 page session（sandbox 已就绪，workdir 已 ready，scaffold 已复制）
+    if payload.pages.is_some() {
+        let active = project_generation_task::ActiveModel {
+            id: Set(task_id),
+            sandbox_id: Set(Some(sandbox_info.id.clone())),
+            preview_port: Set(Some(sandbox_info.preview_port as i32)),
+            workdir_path: Set(Some(sandbox_info.workdir.clone())),
+            status: Set("running".to_owned()),
+            updated_at: Set(chrono::Local::now().naive_local()),
+            ..Default::default()
+        };
+        if let Err(e) = active.update(&state.db).await {
+            tracing::error!("更新多页任务状态失败: {}", e);
+        }
+
+        let state_clone = state.clone();
+        let task_id_dispatch = task_id;
+        tokio::spawn(async move {
+            if let Err(e) = crate::services::multipage_scheduler::dispatch(
+                &state_clone, task_id_dispatch,
+            ).await {
+                tracing::error!("multipage dispatch task={} 失败: {}", task_id_dispatch, e);
+            }
+        });
+
+        return Json(json!({
+            "task_id": task_id,
+            "status": "running",
+            "page_count": payload.pages.as_ref().map(|p| p.len()).unwrap_or(0),
+            "sandbox_id": sandbox_info.id,
+            "workdir_path": sandbox_info.workdir,
+            "preview_port": sandbox_info.preview_port,
+        }))
+        .into_response();
+    }
+
     // 3. 调 claw-agent-server 创建会话
     let claw = ClawAgentClient::new(state.http_client.clone(), state.claw_agent_url.clone());
     let initial_message = build_initial_prompt(&payload.amis_json, payload.extra_prompt.as_deref());
