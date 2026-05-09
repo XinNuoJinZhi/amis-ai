@@ -190,13 +190,7 @@ async fn run_unified(
         .as_deref()
         .ok_or_else(|| SchedulerError::Sandbox("sandbox_id 缺失".to_string()))?;
 
-    let req = CreateTaskRequest {
-        workdir: workdir.to_string(),
-        sandbox_id: sandbox_id.to_string(),
-        initial_message: prompt,
-        single_shot: Some(true),
-        ..Default::default()
-    };
+    let req = build_stage_request(state, task, workdir, sandbox_id, prompt).await?;
     let resp = match claw.create_task(req).await {
         Ok(r) => r,
         Err(e) => {
@@ -211,6 +205,12 @@ async fn run_unified(
             return Err(SchedulerError::ClawAgent(err));
         }
     };
+
+    // W7+ 修：拿到 session_id 立刻落库（5 页共享同一个 session_id），方便任务还在跑时
+    // 从 DB 反查 session_id 进行 stop / debug；之前只在 succeeded/failed 终态分支才回写。
+    for page in pages {
+        let _ = update_page_session_id_early(&state.db, page.id, &resp.id).await;
+    }
 
     // 真完成等待：订阅 ws 等到 status_change 才决定是否标 done
     let final_status = wait_session_completed(state, task.id, &resp.id).await;
@@ -305,13 +305,7 @@ async fn run_skeleton_stage(
         .as_deref()
         .ok_or_else(|| SchedulerError::Sandbox("sandbox_id 缺失".to_string()))?;
 
-    let req = CreateTaskRequest {
-        workdir: workdir.to_string(),
-        sandbox_id: sandbox_id.to_string(),
-        initial_message: prompt,
-        single_shot: Some(true),
-        ..Default::default()
-    };
+    let req = build_stage_request(state, task, workdir, sandbox_id, prompt).await?;
     let resp = match claw.create_task(req).await {
         Ok(r) => r,
         Err(e) => {
@@ -387,13 +381,7 @@ async fn run_cleanup_stage(
         .as_deref()
         .ok_or_else(|| SchedulerError::Sandbox("sandbox_id 缺失".to_string()))?;
 
-    let req = CreateTaskRequest {
-        workdir: workdir.to_string(),
-        sandbox_id: sandbox_id.to_string(),
-        initial_message: prompt,
-        single_shot: Some(true),
-        ..Default::default()
-    };
+    let req = build_stage_request(state, task, workdir, sandbox_id, prompt).await?;
     let resp = match claw.create_task(req).await {
         Ok(r) => r,
         Err(e) => {
@@ -506,13 +494,7 @@ async fn run_r3_refactor(
         .as_deref()
         .ok_or_else(|| SchedulerError::Sandbox("sandbox_id 缺失".to_string()))?;
 
-    let req = CreateTaskRequest {
-        workdir: workdir.to_string(),
-        sandbox_id: sandbox_id.to_string(),
-        initial_message: prompt,
-        single_shot: Some(true),
-        ..Default::default()
-    };
+    let req = build_stage_request(state, task, workdir, sandbox_id, prompt).await?;
     let resp = match claw.create_task(req).await {
         Ok(r) => r,
         Err(e) => {
@@ -670,6 +652,10 @@ async fn run_isolated_pages_with_shared_context(
                 Ok(r) => r.id,
                 Err(e) => return (page_id, page_idx, Err(e.to_string())),
             };
+            // W7+ 修：拿到 session_id 立刻落库，方便任务还在跑时从 DB 反查；
+            // 之前只在 join 成功后才回写，failed/timeout 时永远 NULL。
+            let _ =
+                update_page_session_id_early(&state_for_wait.db, page_id, &session_id).await;
             // 真完成等待：订阅本 page session 的 ws，等到 status_change=succeeded/failed
             let final_status =
                 wait_session_completed(&state_for_wait, task_id_for_wait, &session_id).await;
@@ -769,6 +755,65 @@ async fn record_page_event(
         ..Default::default()
     };
     let _ = active.insert(&state.db).await; // 事件丢失可接受，不返回错误
+}
+
+/// W7+ 修：构造 stage 级 CreateTaskRequest（带完整 LLM 配置 + Skills 字段）。
+/// 之前 unified / skeleton / cleanup / r3_refactor 4 处 stage 函数的 CreateTaskRequest
+/// 都只传了 workdir / sandbox_id / initial_message / single_shot，
+/// 缺 model / tech_stack / platform / tech_stacks / ui_libs / llm_config —— claw-agent
+/// 拿不到 LLM 配置就立刻 status_change=failed（评测里看到 0 LLM 调用 + 极快失败的根因）。
+/// 这个 helper 跟 isolated 各页 spawn 的 CreateTaskRequest 同款字段，统一收口。
+async fn build_stage_request(
+    state: &AppState,
+    task: &project_generation_task::Model,
+    workdir: &str,
+    sandbox_id: &str,
+    prompt: String,
+) -> SchedulerResult<CreateTaskRequest> {
+    let llm_decision = crate::services::llm_selector::select_for_task(
+        state,
+        task.user_id,
+        &task.amis_json,
+        Some(&task.llm_mode),
+        task.llm_provider_id,
+        task.llm_model_name.as_deref(),
+    )
+    .await
+    .map_err(|e| SchedulerError::ClawAgent(format!("llm_selector 失败: {e}")))?;
+    let llm_cfg = llm_decision.config;
+    Ok(CreateTaskRequest {
+        workdir: workdir.to_string(),
+        sandbox_id: sandbox_id.to_string(),
+        initial_message: prompt,
+        model: Some(llm_cfg.model.clone()),
+        tech_stack: Some(task.tech_stack.clone()),
+        platform: Some(task.platform.clone()),
+        tech_stacks: Some(task.tech_stacks.clone()),
+        ui_libs: Some(task.ui_libs.clone()),
+        llm_config: Some(llm_cfg),
+        single_shot: Some(true),
+        ..Default::default()
+    })
+}
+
+/// W7+ 修：拿到 claw session_id 后立刻把它落到 page 表（不等任务结束）。
+/// 之前 5 处 spawn 都是在终态分支才回写 claw_session_id，导致：
+/// - 任务还在 running 时 page 表 claw_session_id=NULL，无法从 DB 反查 session 进行 stop / debug
+/// - 任务 timeout / failed 时也永远 NULL
+/// fire-and-forget 风格，DB 失败不影响主流程。
+async fn update_page_session_id_early(
+    db: &sea_orm::DatabaseConnection,
+    page_id: i32,
+    session_id: &str,
+) {
+    let _ = project_task_page::ActiveModel {
+        id: Set(page_id),
+        claw_session_id: Set(Some(session_id.to_string())),
+        updated_at: Set(Utc::now().naive_utc()),
+        ..Default::default()
+    }
+    .update(db)
+    .await;
 }
 
 /// 缺陷 4 闭环连线（W6.5）：5 种策略全跑完后调一次 ——
