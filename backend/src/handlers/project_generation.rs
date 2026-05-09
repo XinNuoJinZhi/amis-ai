@@ -520,6 +520,8 @@ pub async fn create_task(
         } else {
             Some(extra_system_sections)
         },
+        // 单页 IDE 路径走 interactive 模式（前端 WS 会持续追加 follow-up message）
+        single_shot: None,
     };
 
     let claw_resp = match claw.create_task(claw_req).await {

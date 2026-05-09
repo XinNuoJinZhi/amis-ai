@@ -111,6 +111,24 @@ pub async fn dispatch(
     // 但**不**写 RAG（避免脏样本污染）。
     run_epilog(state, &task, &pages, result.is_ok()).await;
 
+    // W6.5 收尾：epilog 写完后回写 task 主表 status，前端 IDE / 评测 runner 才知道真终态。
+    // 多页路径没有 dev_status_watcher（那是单页路径独有的 dev server 健康监听），
+    // task 主表的 status 更新就由这里兜底——已 status_change=succeeded 的各 page + epilog 都写完，
+    // 就敢拍板 task succeeded 了。
+    let task_id_for_log = task.id;
+    let final_status = if result.is_ok() { "succeeded" } else { "failed" };
+    let mut active: project_generation_task::ActiveModel = task.into();
+    active.status = Set(final_status.to_owned());
+    active.updated_at = Set(Utc::now().naive_utc());
+    if let Err(e) = active.update(&state.db).await {
+        tracing::warn!(
+            "multipage scheduler: 回写 task={} 主表 status={} 失败: {}",
+            task_id_for_log,
+            final_status,
+            e
+        );
+    }
+
     result
 }
 
@@ -176,6 +194,7 @@ async fn run_unified(
         workdir: workdir.to_string(),
         sandbox_id: sandbox_id.to_string(),
         initial_message: prompt,
+        single_shot: Some(true),
         ..Default::default()
     };
     let resp = match claw.create_task(req).await {
@@ -290,6 +309,7 @@ async fn run_skeleton_stage(
         workdir: workdir.to_string(),
         sandbox_id: sandbox_id.to_string(),
         initial_message: prompt,
+        single_shot: Some(true),
         ..Default::default()
     };
     let resp = match claw.create_task(req).await {
@@ -371,6 +391,7 @@ async fn run_cleanup_stage(
         workdir: workdir.to_string(),
         sandbox_id: sandbox_id.to_string(),
         initial_message: prompt,
+        single_shot: Some(true),
         ..Default::default()
     };
     let resp = match claw.create_task(req).await {
@@ -489,6 +510,7 @@ async fn run_r3_refactor(
         workdir: workdir.to_string(),
         sandbox_id: sandbox_id.to_string(),
         initial_message: prompt,
+        single_shot: Some(true),
         ..Default::default()
     };
     let resp = match claw.create_task(req).await {
@@ -641,6 +663,7 @@ async fn run_isolated_pages_with_shared_context(
                 tech_stacks: Some(tech_stacks),
                 ui_libs: Some(ui_libs),
                 llm_config: Some(llm_cfg),
+                single_shot: Some(true),
                 ..Default::default()
             };
             let session_id = match claw.create_task(req).await {

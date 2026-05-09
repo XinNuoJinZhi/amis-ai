@@ -46,6 +46,11 @@ pub struct CreateTaskRequest {
     /// 这些段会在 Skills 索引之后被追加，不替换任何现有内容。
     #[serde(default)]
     pub extra_system_sections: Option<Vec<String>>,
+    /// 1.2.0：single-shot 模式（默认 false = interactive）。
+    /// true 时跑完 initial turn 立刻退出，不等 follow-up message——
+    /// 适用于多页 / batch 等"一锤子买卖"用法，task_loop 自然走到 succeeded 终态。
+    #[serde(default)]
+    pub single_shot: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -129,6 +134,7 @@ pub async fn create_task(
         msg_rx,
         extra_system_sections: req.extra_system_sections.unwrap_or_default(),
         initial_events,
+        single_shot: req.single_shot.unwrap_or(false),
     });
 
     Ok(Json(CreateTaskResponse {
