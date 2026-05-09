@@ -59,3 +59,7 @@ claw-code/rust/target/
 
 # plan 本地副本（如果 engineer 另存）
 docs/plans/*.local.md
+
+# 1.2.0 评测 runner 产物（每次跑会带时间戳，源码不持久化）
+eval/multipage-1.2/results-*.csv
+eval/multipage-1.2/results-*.md

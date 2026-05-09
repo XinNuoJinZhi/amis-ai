@@ -1,0 +1,36 @@
+{
+  "_comment": "1.2.0 多页评测 prompt 集 — 覆盖不同复杂度，让 5 策略 (R4 / R2 / R1 / R3 / Unified) 在同一基准上对比",
+  "_indicators": "复用率 / 页通过率 / LLM 调用次数 / LLM 总耗时 / 总耗时",
+  "prompts": [
+    {
+      "id": "p1_basic_3pages",
+      "title": "基础三页（首页+列表+表单）",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"首页\",\"body\":[{\"type\":\"tpl\",\"tpl\":\"欢迎使用 demo 应用\"},{\"type\":\"button\",\"label\":\"去列表\",\"actionType\":\"link\",\"link\":\"/list\"}]}", "route_path": "/"},
+        {"amis_json": "{\"type\":\"crud\",\"title\":\"用户列表\",\"api\":\"/api/users\",\"columns\":[{\"name\":\"id\",\"label\":\"ID\"},{\"name\":\"name\",\"label\":\"姓名\"},{\"name\":\"email\",\"label\":\"邮箱\"}]}", "route_path": "/list"},
+        {"amis_json": "{\"type\":\"form\",\"title\":\"用户编辑\",\"api\":\"/api/users\",\"controls\":[{\"name\":\"name\",\"label\":\"姓名\",\"type\":\"text\"},{\"name\":\"email\",\"label\":\"邮箱\",\"type\":\"email\"}]}", "route_path": "/form"}
+      ]
+    },
+    {
+      "id": "p2_admin_4pages",
+      "title": "后台管理四页（仪表盘+用户+商品+设置）",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"仪表盘\",\"body\":[{\"type\":\"cards\",\"items\":[{\"title\":\"今日订单\",\"value\":128},{\"title\":\"今日营收\",\"value\":\"¥9,876\"}]}]}", "route_path": "/dashboard"},
+        {"amis_json": "{\"type\":\"crud\",\"title\":\"用户管理\",\"api\":\"/api/users\",\"columns\":[{\"name\":\"id\"},{\"name\":\"name\",\"label\":\"姓名\"},{\"name\":\"role\",\"label\":\"角色\"}]}", "route_path": "/users"},
+        {"amis_json": "{\"type\":\"crud\",\"title\":\"商品管理\",\"api\":\"/api/products\",\"columns\":[{\"name\":\"id\"},{\"name\":\"name\",\"label\":\"商品名\"},{\"name\":\"price\",\"label\":\"价格\"}]}", "route_path": "/products"},
+        {"amis_json": "{\"type\":\"form\",\"title\":\"系统设置\",\"controls\":[{\"name\":\"siteName\",\"label\":\"站点名\",\"type\":\"text\"},{\"name\":\"theme\",\"label\":\"主题\",\"type\":\"select\",\"options\":[\"light\",\"dark\"]}]}", "route_path": "/settings"}
+      ]
+    },
+    {
+      "id": "p3_ecommerce_5pages",
+      "title": "电商五页（首页+商品列表+详情+购物车+订单）",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"商城首页\",\"body\":[{\"type\":\"banner\",\"text\":\"限时秒杀\"},{\"type\":\"cards\",\"label\":\"热门商品\"}]}", "route_path": "/"},
+        {"amis_json": "{\"type\":\"crud\",\"title\":\"商品列表\",\"api\":\"/api/goods\",\"columns\":[{\"name\":\"image\",\"label\":\"图\"},{\"name\":\"name\",\"label\":\"名称\"},{\"name\":\"price\",\"label\":\"价格\"}]}", "route_path": "/goods"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"商品详情\",\"body\":[{\"type\":\"image\"},{\"type\":\"tpl\",\"tpl\":\"${name} ¥${price}\"},{\"type\":\"button\",\"label\":\"加入购物车\",\"actionType\":\"ajax\",\"api\":\"/api/cart\"}]}", "route_path": "/goods/detail"},
+        {"amis_json": "{\"type\":\"crud\",\"title\":\"购物车\",\"api\":\"/api/cart\",\"columns\":[{\"name\":\"name\"},{\"name\":\"qty\",\"label\":\"数量\"},{\"name\":\"subtotal\",\"label\":\"小计\"}]}", "route_path": "/cart"},
+        {"amis_json": "{\"type\":\"form\",\"title\":\"提交订单\",\"controls\":[{\"name\":\"address\",\"label\":\"收货地址\",\"type\":\"textarea\"},{\"name\":\"payment\",\"label\":\"支付方式\",\"type\":\"radios\",\"options\":[\"微信\",\"支付宝\"]}]}", "route_path": "/checkout"}
+      ]
+    }
+  ]
+}
