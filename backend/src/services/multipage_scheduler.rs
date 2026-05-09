@@ -361,11 +361,17 @@ async fn run_cleanup_stage(
         .collect::<Vec<_>>()
         .join("\n");
     let prompt = format!(
-        "项目已完成 {} 页生成 + 骨架。请：\n\
-         1. 跑 lint（如 eslint）\n\
+        "项目已完成 {} 页生成 + 骨架。请做静态质检（**只读检查，不要执行任何 dev / build / install 命令**）：\n\
+         1. 跑 lint（如 eslint）—— 只读检查，不要 --fix\n\
          2. 检查所有 src/pages/*.vue 中的 uni.navigateTo / uni.switchTab 路径是否存在于 pages.json\n\
          3. 检查所有 import 路径是否能解析（不存在的文件路径报错）\n\
-         4. 启动 dev server 验证不报错\n\n\
+         \n\
+         ⚠️ 严禁执行：`pnpm run dev:h5` / `pnpm dev` / `pnpm build` / `pnpm install` 等任何长时间或前台 blocking 命令。\n\
+         dev server 由外部 watcher 自动启动 + 健康检查，**不需要你启动验证**。\n\
+         如果你启动了 dev server，bash tool 会卡住等不到返回，整个 cleanup session 会超时失败。\n\
+         \n\
+         完成上述 3 项静态检查后，用一段话回复总结发现的问题（或确认全部 OK），就可以结束本轮对话。\n\
+         \n\
          路由表：\n{}",
         pages.len(),
         route_list,
