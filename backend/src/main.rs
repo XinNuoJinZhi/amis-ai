@@ -22,6 +22,9 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub sandbox_url: String,
     pub claw_agent_url: String,
+    /// 1.2.0：multipage 任务收尾后调 agent /multipage/record 写 RAG。
+    /// 由 env `AGENT_URL` 注入，默认 `http://localhost:8000`。
+    pub agent_url: String,
     pub workdir_root: String,
     /// Skills 根目录（运行时读，与 claw-agent-server 共享）。
     /// A.6 引入：backend 不内置 skills（不用 include_str!），运行时直接读宿主机目录，
@@ -406,6 +409,8 @@ async fn main() {
         .unwrap_or_else(|_| "http://localhost:8091".to_string());
     let claw_agent_url = std::env::var("CLAW_AGENT_URL")
         .unwrap_or_else(|_| "http://localhost:8090".to_string());
+    let agent_url = std::env::var("AGENT_URL")
+        .unwrap_or_else(|_| "http://localhost:8000".to_string());
     let workdir_root = std::env::var("SANDBOX_WORKDIR_ROOT")
         .unwrap_or_else(|_| "/var/amis-ai/workdirs".to_string());
 
@@ -442,6 +447,7 @@ async fn main() {
         http_client,
         sandbox_url,
         claw_agent_url,
+        agent_url,
         workdir_root,
         skills_root,
         template_registry,

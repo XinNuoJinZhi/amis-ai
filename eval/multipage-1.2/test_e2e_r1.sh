@@ -49,7 +49,7 @@ echo "✅ 5 页全 done"
 
 # 4. 校验 R1 三阶段事件都到位
 EVENTS=$(curl -s "$API/projects/tasks/$TASK_ID/events/history" -H "Authorization: Bearer $TOKEN")
-echo "$EVENTS" | jq '[.[] | select(.event_type | startswith("skeleton_") or startswith("cleanup_"))] | map(.event_type)'
+echo "$EVENTS" | jq '[.[] | select((.event_type // "") | startswith("skeleton_") or startswith("cleanup_"))] | map(.event_type)'
 SKELETON_DONE=$(echo "$EVENTS" | jq '[.[] | select(.event_type=="skeleton_done")] | length')
 CLEANUP_DONE=$(echo "$EVENTS" | jq '[.[] | select(.event_type=="cleanup_done")] | length')
 [ "$SKELETON_DONE" -ge 1 ] || { echo "❌ skeleton_done 缺失"; exit 1; }

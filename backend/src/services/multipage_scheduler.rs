@@ -36,6 +36,7 @@
 use crate::entity::{project_generation_task, project_task_event, project_task_page};
 use crate::services::claw_agent_client::{ClawAgentClient, CreateTaskRequest};
 use crate::services::llm_selector;
+use crate::services::multipage_session_watcher::{wait_session_completed, SessionFinalStatus};
 use crate::AppState;
 use chrono::Utc;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
@@ -89,7 +90,7 @@ pub async fn dispatch(
         return Ok(());
     }
 
-    match task.execution_strategy.as_str() {
+    let result = match task.execution_strategy.as_str() {
         "unified" => run_unified(state, &task, &pages).await,
         "isolated" => match task.reuse_strategy.as_deref() {
             Some("r1_skeleton") => run_r1_skeleton(state, &task, &pages).await,
@@ -103,7 +104,14 @@ pub async fn dispatch(
         other => Err(SchedulerError::InvalidStrategy(format!(
             "未知 execution_strategy: {other}"
         ))),
-    }
+    };
+
+    // 缺陷 4 闭环连线（W6.5）：5 种策略全部跑完才走 epilog —— 算复用率 + 写 reuse_metric event
+    // + 调 agent /multipage/record 写 RAG。失败任务也写 reuse_metric（复用率 0 可作为对照样本），
+    // 但**不**写 RAG（避免脏样本污染）。
+    run_epilog(state, &task, &pages, result.is_ok()).await;
+
+    result
 }
 
 // ─── 5 个策略 stub（每个在后续 Task 里替换为真实实现）
@@ -170,10 +178,27 @@ async fn run_unified(
         initial_message: prompt,
         ..Default::default()
     };
-    match claw.create_task(req).await {
-        Ok(resp) => {
-            // 统筹一次完成，标全部 page status=done
-            let now = chrono::Utc::now().naive_utc();
+    let resp = match claw.create_task(req).await {
+        Ok(r) => r,
+        Err(e) => {
+            let err = e.to_string();
+            record_page_event(
+                state,
+                task.id,
+                "unified_failed",
+                serde_json::json!({"error": err.clone()}),
+            )
+            .await;
+            return Err(SchedulerError::ClawAgent(err));
+        }
+    };
+
+    // 真完成等待：订阅 ws 等到 status_change 才决定是否标 done
+    let final_status = wait_session_completed(state, task.id, &resp.id).await;
+    let now = Utc::now().naive_utc();
+
+    match final_status {
+        SessionFinalStatus::Succeeded => {
             for page in pages {
                 let active = project_task_page::ActiveModel {
                     id: Set(page.id),
@@ -194,13 +219,25 @@ async fn run_unified(
             .await;
             Ok(())
         }
-        Err(e) => {
-            let err = e.to_string();
+        bad => {
+            let err = format!("unified session {} 终态={}", resp.id, bad.as_str());
+            for page in pages {
+                let active = project_task_page::ActiveModel {
+                    id: Set(page.id),
+                    status: Set("failed".to_string()),
+                    claw_session_id: Set(Some(resp.id.clone())),
+                    error_msg: Set(Some(err.clone())),
+                    finished_at: Set(Some(now)),
+                    updated_at: Set(now),
+                    ..Default::default()
+                };
+                let _ = active.update(&state.db).await;
+            }
             record_page_event(
                 state,
                 task.id,
                 "unified_failed",
-                serde_json::json!({"error": err.clone()}),
+                serde_json::json!({"session_id": resp.id, "error": err.clone()}),
             )
             .await;
             Err(SchedulerError::ClawAgent(err))
@@ -255,8 +292,25 @@ async fn run_skeleton_stage(
         initial_message: prompt,
         ..Default::default()
     };
-    match claw.create_task(req).await {
-        Ok(resp) => {
+    let resp = match claw.create_task(req).await {
+        Ok(r) => r,
+        Err(e) => {
+            let err = e.to_string();
+            record_page_event(
+                state,
+                task.id,
+                "skeleton_failed",
+                serde_json::json!({"error": err.clone()}),
+            )
+            .await;
+            return Err(SchedulerError::ClawAgent(err));
+        }
+    };
+
+    // 真完成等待：骨架 session 必须真跑完再让阶段 2 各页并发，否则 scan_sandbox 会扫到空骨架
+    let final_status = wait_session_completed(state, task.id, &resp.id).await;
+    match final_status {
+        SessionFinalStatus::Succeeded => {
             record_page_event(
                 state,
                 task.id,
@@ -266,13 +320,13 @@ async fn run_skeleton_stage(
             .await;
             Ok(resp.id)
         }
-        Err(e) => {
-            let err = e.to_string();
+        bad => {
+            let err = format!("skeleton session {} 终态={}", resp.id, bad.as_str());
             record_page_event(
                 state,
                 task.id,
                 "skeleton_failed",
-                serde_json::json!({"error": err.clone()}),
+                serde_json::json!({"session_id": resp.id, "error": err.clone()}),
             )
             .await;
             Err(SchedulerError::ClawAgent(err))
@@ -319,8 +373,24 @@ async fn run_cleanup_stage(
         initial_message: prompt,
         ..Default::default()
     };
-    match claw.create_task(req).await {
-        Ok(resp) => {
+    let resp = match claw.create_task(req).await {
+        Ok(r) => r,
+        Err(e) => {
+            let err = e.to_string();
+            record_page_event(
+                state,
+                task.id,
+                "cleanup_failed",
+                serde_json::json!({"error": err.clone()}),
+            )
+            .await;
+            return Err(SchedulerError::ClawAgent(err));
+        }
+    };
+
+    let final_status = wait_session_completed(state, task.id, &resp.id).await;
+    match final_status {
+        SessionFinalStatus::Succeeded => {
             record_page_event(
                 state,
                 task.id,
@@ -330,13 +400,13 @@ async fn run_cleanup_stage(
             .await;
             Ok(())
         }
-        Err(e) => {
-            let err = e.to_string();
+        bad => {
+            let err = format!("cleanup session {} 终态={}", resp.id, bad.as_str());
             record_page_event(
                 state,
                 task.id,
                 "cleanup_failed",
-                serde_json::json!({"error": err.clone()}),
+                serde_json::json!({"session_id": resp.id, "error": err.clone()}),
             )
             .await;
             Err(SchedulerError::ClawAgent(err))
@@ -421,8 +491,24 @@ async fn run_r3_refactor(
         initial_message: prompt,
         ..Default::default()
     };
-    match claw.create_task(req).await {
-        Ok(resp) => {
+    let resp = match claw.create_task(req).await {
+        Ok(r) => r,
+        Err(e) => {
+            let err = e.to_string();
+            record_page_event(
+                state,
+                task.id,
+                "refactor_failed",
+                serde_json::json!({"error": err.clone()}),
+            )
+            .await;
+            return Err(SchedulerError::ClawAgent(err));
+        }
+    };
+
+    let final_status = wait_session_completed(state, task.id, &resp.id).await;
+    match final_status {
+        SessionFinalStatus::Succeeded => {
             record_page_event(
                 state,
                 task.id,
@@ -432,13 +518,13 @@ async fn run_r3_refactor(
             .await;
             Ok(())
         }
-        Err(e) => {
-            let err = e.to_string();
+        bad => {
+            let err = format!("refactor session {} 终态={}", resp.id, bad.as_str());
             record_page_event(
                 state,
                 task.id,
                 "refactor_failed",
-                serde_json::json!({"error": err.clone()}),
+                serde_json::json!({"session_id": resp.id, "error": err.clone()}),
             )
             .await;
             Err(SchedulerError::ClawAgent(err))
@@ -539,9 +625,11 @@ async fn run_isolated_pages_with_shared_context(
         let platform = task.platform.clone();
         let tech_stacks = task.tech_stacks.clone();
         let ui_libs = task.ui_libs.clone();
+        let state_for_wait = state.clone();
+        let task_id_for_wait = task.id;
 
         joinset.spawn(async move {
-            let _permit = permit; // 持有 permit 直到本页完成
+            let _permit = permit; // 持有 permit 直到本页完成 + wait 结束
             let claw = ClawAgentClient::new(http, claw_url);
             let req = CreateTaskRequest {
                 workdir: workdir_owned,
@@ -555,11 +643,17 @@ async fn run_isolated_pages_with_shared_context(
                 llm_config: Some(llm_cfg),
                 ..Default::default()
             };
-            let result = claw
-                .create_task(req)
-                .await
-                .map(|r| r.id)
-                .map_err(|e| e.to_string());
+            let session_id = match claw.create_task(req).await {
+                Ok(r) => r.id,
+                Err(e) => return (page_id, page_idx, Err(e.to_string())),
+            };
+            // 真完成等待：订阅本 page session 的 ws，等到 status_change=succeeded/failed
+            let final_status =
+                wait_session_completed(&state_for_wait, task_id_for_wait, &session_id).await;
+            let result = match final_status {
+                SessionFinalStatus::Succeeded => Ok(session_id),
+                bad => Err(format!("session {} 终态={}", session_id, bad.as_str())),
+            };
             (page_id, page_idx, result)
         });
     }
@@ -652,4 +746,136 @@ async fn record_page_event(
         ..Default::default()
     };
     let _ = active.insert(&state.db).await; // 事件丢失可接受，不返回错误
+}
+
+/// 缺陷 4 闭环连线（W6.5）：5 种策略全跑完后调一次 ——
+/// 1. fs 扫 workdir 算 shared/ 复用率（backend 内联，无跨服务 HTTP）
+/// 2. 写一条 `reuse_metric` 事件（前端可看 + 评测 runner 可读）
+/// 3. 成功任务才调 agent `POST /multipage/record` 写 RAG（status=pending 等人审）
+async fn run_epilog(
+    state: &AppState,
+    task: &project_generation_task::Model,
+    pages: &[project_task_page::Model],
+    success: bool,
+) {
+    let workdir = match task.workdir_path.as_deref() {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            tracing::warn!("multipage epilog: task={} workdir 缺失，跳过收尾", task.id);
+            return;
+        }
+    };
+
+    let metric =
+        crate::services::multipage_reuse::compute_reuse_rate(std::path::Path::new(workdir));
+    record_page_event(
+        state,
+        task.id,
+        "reuse_metric",
+        serde_json::json!({
+            "import_count": metric.import_count,
+            "file_count": metric.file_count,
+            "reuse_rate": metric.reuse_rate,
+            "execution_strategy": task.execution_strategy,
+            "reuse_strategy": task.reuse_strategy,
+            "page_count": pages.len(),
+        }),
+    )
+    .await;
+
+    if !success {
+        tracing::info!(
+            "multipage epilog: task={} 任务失败，跳过 RAG record（避免脏样本）",
+            task.id
+        );
+        return;
+    }
+
+    // POST agent /multipage/record（写 RAG，status=pending 等人审）
+    let pages_payload: Vec<serde_json::Value> = pages
+        .iter()
+        .map(|p| {
+            let full_code = read_page_full_code(workdir, &p.route_path).unwrap_or_default();
+            serde_json::json!({
+                "route_path": p.route_path,
+                "amis_json": p.amis_json,
+                "full_code": full_code,
+            })
+        })
+        .collect();
+    let body = serde_json::json!({
+        "task_id": task.id,
+        "execution_strategy": task.execution_strategy,
+        "reuse_strategy": task.reuse_strategy,
+        "page_count": pages.len(),
+        "reuse_rate": metric.reuse_rate,
+        "pages": pages_payload,
+    });
+
+    let url = format!("{}/multipage/record", state.agent_url.trim_end_matches('/'));
+    match state.http_client.post(&url).json(&body).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let sample_id = resp
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| v.get("sample_id").and_then(|s| s.as_i64()))
+                .unwrap_or(-1);
+            record_page_event(
+                state,
+                task.id,
+                "rag_recorded",
+                serde_json::json!({"sample_id": sample_id, "reuse_rate": metric.reuse_rate}),
+            )
+            .await;
+            tracing::info!(
+                "multipage epilog: task={} 写 RAG 成功 sample_id={}",
+                task.id,
+                sample_id
+            );
+        }
+        Ok(resp) => {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            tracing::warn!(
+                "multipage epilog: task={} 写 RAG 失败 status={} body={}",
+                task.id,
+                status,
+                text
+            );
+            record_page_event(
+                state,
+                task.id,
+                "rag_record_failed",
+                serde_json::json!({"status": status.as_u16(), "body": text}),
+            )
+            .await;
+        }
+        Err(e) => {
+            tracing::warn!("multipage epilog: task={} 写 RAG 异常: {}", task.id, e);
+            record_page_event(
+                state,
+                task.id,
+                "rag_record_failed",
+                serde_json::json!({"error": e.to_string()}),
+            )
+            .await;
+        }
+    }
+}
+
+/// 按 route_path 在 workdir 下找该页生成的 .vue 文件全文。
+/// 兼容 `src/pages/<route>.vue` 与 `src/pages/<route>/index.vue` 两种约定。
+fn read_page_full_code(workdir: &str, route_path: &str) -> Option<String> {
+    let normalized = route_path.trim_start_matches('/').trim_start_matches("pages/");
+    let candidates = [
+        format!("{workdir}/src/pages/{normalized}.vue"),
+        format!("{workdir}/src/pages/{normalized}/index.vue"),
+    ];
+    for c in &candidates {
+        if let Ok(s) = std::fs::read_to_string(c) {
+            return Some(s);
+        }
+    }
+    None
 }
