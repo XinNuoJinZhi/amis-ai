@@ -644,6 +644,34 @@ export default function ChatPanel({ taskId, events, connected, onClose, bordered
     currentStatus === 'running' ||
     currentStatus === 'waiting_user';
 
+  /**
+   * "当前 turn 已 idle"——单页 IDE interactive 模式下，task_loop 设计就是
+   * 跑完 initial turn 后阻塞等 follow-up message，task.status 永远 running 直到
+   * 用户主动停止，这导致按钮永远显示"停止"，用户体验是"AI 答完了不让我继续输入"。
+   *
+   * 这里扫 events 流：往回找最近一条相关事件
+   * - turn_complete       → 当前 turn 已答完，让用户继续输入（idle=true）
+   * - llm_request_start / tool_use / user_message → agent 正在干活（idle=false）
+   *
+   * isRunning && !latestTurnIdle 才显示停止按钮；turn_complete 后回到发送按钮。
+   * optimisticBusy（用户刚发消息 60s 内）独立兜底，覆盖事件还没回来的瞬时空窗。
+   */
+  const latestTurnIdle = useMemo<boolean>(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i] as any;
+      const t = e.type || e.event_type;
+      if (t === 'turn_complete') return true;
+      if (
+        t === 'llm_request_start' ||
+        t === 'tool_use' ||
+        t === 'user_message' ||
+        t === 'text_delta'
+      )
+        return false;
+    }
+    return false;
+  }, [events]);
+
   // optimisticBusy 收尾：仅扫"用户发消息之后新增的"事件，看到 turn_complete 或
   // status 切到非 active 时关掉。
   // 不能扫整个 events——历史里早就有 turn_complete（前几轮 LLM 完成时推过），
@@ -686,7 +714,10 @@ export default function ChatPanel({ taskId, events, connected, onClose, bordered
     };
   }, []);
 
-  const showStop = isRunning || optimisticBusy;
+  // 单页 IDE interactive 模式：isRunning && !latestTurnIdle 才显示停止；
+  // turn_complete 后即使 task.status=running 也让用户继续输入（idle 状态）。
+  // optimisticBusy 独立兜底用户刚发消息后事件还没回来的瞬时空窗。
+  const showStop = (isRunning && !latestTurnIdle) || optimisticBusy;
 
   const [stopping, setStopping] = useState(false);
   const handleStop = async () => {
