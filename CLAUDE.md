@@ -120,6 +120,7 @@ cd agent && uv run uvicorn src.main:app --reload --port 8000
 | [2026-04-25-tracelog.md](docs/upgrades/2026-04-25-tracelog.md) | 任务追踪日志（每任务 FS 归档：events / LLM 入参+响应 / Skills+RAG 全文快照 / analysis_input.md） |
 | [2026-04-27-conversation-streaming.md](docs/upgrades/2026-04-27-conversation-streaming.md) | 通用 AI 对话：SSE 流式打字机 + 多会话 DB 持久化（左侧会话栏 / 重命名 / 删除） |
 | [2026-05-07-amis-knowledge-completion.md](docs/upgrades/2026-05-07-amis-knowledge-completion.md) | 1.1.0 · Amis 知识双轨补全（175 schema + 148 RAG 样例 + 100% embedding；接受 0pp delta + 上线 thumbs 兜底） |
+| [2026-05-09-multipage-reverse-flywheel-1.2.md](docs/upgrades/2026-05-09-multipage-reverse-flywheel-1.2.md) | 1.2.0 · 多页面反向飞轮 + 5 策略评测矩阵（R4/R2 推 GA；R3/R1/Unified experimental；3 prompts × 5 策略 = 15 任务全量评测 2h15min） |
 
 ### 规范与清单
 
