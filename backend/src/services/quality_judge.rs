@@ -229,9 +229,9 @@ pub fn spawn_judge_for_sample(state: AppState, sample_id: i32, trigger: &'static
         let mut active = sample.into_active_model();
         active.quality_verdict = Set(Some(verdict.to_string()));
         active.quality_reason = Set(Some(reason.clone()));
-        active.quality_judge_at = Set(Some(chrono::Local::now().naive_local()));
+        active.quality_judge_at = Set(Some(chrono::Utc::now().naive_utc()));
         active.quality_judge_model = Set(Some(model_used.clone()));
-        active.updated_at = Set(chrono::Local::now().naive_local());
+        active.updated_at = Set(chrono::Utc::now().naive_utc());
         if let Err(e) = active.update(&state.db).await {
             tracing::warn!("judge {} persist failed: {}", sample_id, e);
             return;

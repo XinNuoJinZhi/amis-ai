@@ -104,7 +104,7 @@ pub async fn upsert_setting(
     if let Err(e) = require_admin(&state, &auth).await {
         return e.into_response();
     }
-    let now = chrono::Local::now().naive_local();
+    let now = chrono::Utc::now().naive_utc();
     let existing = system_setting::Entity::find()
         .filter(system_setting::Column::Key.eq(&key))
         .one(&state.db)

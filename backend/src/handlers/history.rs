@@ -107,7 +107,7 @@ pub async fn create_history(
         generated_json: Set(payload.generated_json),
         model_used: Set(payload.model_used),
         status: Set("generated".to_owned()),
-        created_at: Set(chrono::Local::now().naive_local()),
+        created_at: Set(chrono::Utc::now().naive_utc()),
         ..Default::default()
     };
 
@@ -132,7 +132,7 @@ pub async fn adopt_history(
             let mut active: generation_history::ActiveModel = record.clone().into_active_model();
             active.status = Set("adopted".to_owned());
             active.final_json = Set(Some(payload.final_json.clone()));
-            active.adopted_at = Set(Some(chrono::Local::now().naive_local()));
+            active.adopted_at = Set(Some(chrono::Utc::now().naive_utc()));
 
             let updated = match active.update(&state.db).await {
                 Ok(u) => u,
@@ -155,7 +155,7 @@ pub async fn adopt_history(
                 source_history_id: Set(Some(id)),
                 quality_score: Set(Some(0.5)),
                 usage_count: Set(Some(0)),
-                created_at: Set(chrono::Local::now().naive_local()),
+                created_at: Set(chrono::Utc::now().naive_utc()),
                 ..Default::default()
             };
 

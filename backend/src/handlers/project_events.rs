@@ -142,7 +142,7 @@ async fn persist_event(db: &sea_orm::DatabaseConnection, task_id: i32, json_text
         task_id: Set(task_id),
         event_type: Set(event_type),
         payload: Set(json_text.to_string()),
-        created_at: Set(chrono::Local::now().naive_local()),
+        created_at: Set(chrono::Utc::now().naive_utc()),
         ..Default::default()
     };
 
@@ -684,7 +684,7 @@ pub async fn post_runtime_error(
         // 超上限：标记 failed
         let mut active: project_generation_task::ActiveModel = task.into();
         active.status = Set("failed".to_string());
-        active.updated_at = Set(chrono::Local::now().naive_local());
+        active.updated_at = Set(chrono::Utc::now().naive_utc());
         let _ = active.update(&state.db).await;
         return (
             axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -741,7 +741,7 @@ pub async fn post_runtime_error(
     let mut active: project_generation_task::ActiveModel = task.into();
     active.status = Set("running".to_string());
     active.fix_attempts = Set(attempts + 1);
-    active.updated_at = Set(chrono::Local::now().naive_local());
+    active.updated_at = Set(chrono::Utc::now().naive_utc());
     let _ = active.update(&state.db).await;
 
     // 写 system 消息（前端能看到修复轨迹）
@@ -749,7 +749,7 @@ pub async fn post_runtime_error(
         task_id: Set(id),
         role: Set("system".to_owned()),
         content: Set(fix_message.clone()),
-        created_at: Set(chrono::Local::now().naive_local()),
+        created_at: Set(chrono::Utc::now().naive_utc()),
         ..Default::default()
     }
     .insert(&state.db)

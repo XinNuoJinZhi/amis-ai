@@ -84,7 +84,7 @@ pub(crate) async fn record_audit(
         before_json: Set(before),
         after_json: Set(after),
         note: Set(note),
-        created_at: Set(chrono::Local::now().naive_local()),
+        created_at: Set(chrono::Utc::now().naive_utc()),
         ..Default::default()
     };
     if let Err(e) = active.insert(db).await {
@@ -324,7 +324,7 @@ pub async fn create_code_sample(
         )
             .into_response();
     }
-    let now = chrono::Local::now().naive_local();
+    let now = chrono::Utc::now().naive_utc();
     let active = code_sample::ActiveModel {
         tech_stack: Set(body.tech_stack.clone()),
         source_team: Set(body.source_team.clone()),
@@ -454,7 +454,7 @@ pub async fn update_code_sample(
     if let Some(v) = body.source_team {
         active.source_team = Set(v);
     }
-    active.updated_at = Set(chrono::Local::now().naive_local());
+    active.updated_at = Set(chrono::Utc::now().naive_utc());
 
     let updated = match active.update(&state.db).await {
         Ok(m) => m,
@@ -552,7 +552,7 @@ async fn set_status(
     let old_status = existing.status.clone();
     let mut active = existing.into_active_model();
     active.status = Set(new_status.to_string());
-    active.updated_at = Set(chrono::Local::now().naive_local());
+    active.updated_at = Set(chrono::Utc::now().naive_utc());
     let updated = active
         .update(&state.db)
         .await
@@ -840,7 +840,7 @@ pub async fn submit_rating(
         }
     };
     let old_rating = existing.rating;
-    let now = chrono::Local::now().naive_local();
+    let now = chrono::Utc::now().naive_utc();
     let mut active = existing.into_active_model();
     active.rating = Set(body.rating);
     active.rating_note = Set(body.note.clone());
@@ -930,7 +930,7 @@ pub async fn mark_negative(
     if body.also_reject {
         active.status = Set("rejected".to_string());
     }
-    active.updated_at = Set(chrono::Local::now().naive_local());
+    active.updated_at = Set(chrono::Utc::now().naive_utc());
     let updated = match active.update(&state.db).await {
         Ok(m) => m,
         Err(e) => {
@@ -1260,7 +1260,7 @@ pub async fn unmark_negative(
     let mut active = existing.into_active_model();
     active.is_negative = Set(false);
     active.negative_kind = Set(None);
-    active.updated_at = Set(chrono::Local::now().naive_local());
+    active.updated_at = Set(chrono::Utc::now().naive_utc());
     let updated = match active.update(&state.db).await {
         Ok(m) => m,
         Err(e) => {
