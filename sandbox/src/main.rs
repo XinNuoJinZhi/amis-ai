@@ -3,12 +3,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-mod docker;
-mod port_pool;
-mod state;
-mod handlers;
 mod dev_runner;
+mod docker;
 mod fs_handlers;
+mod handlers;
+mod port_pool;
+mod reuse_metrics;
+mod state;
 mod terminal_handlers;
 
 use state::{AppState, SharedState};

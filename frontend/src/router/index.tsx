@@ -12,6 +12,7 @@ import SystemSettingsTab from '../views/Settings/SystemSettings';
 import Projects from '../views/Projects';
 import ProjectDetail from '../views/Projects/detail';
 import LegacyProjectDetail from '../views/Projects/Detail';
+import CreateMultipageTask from '../views/Projects/CreateMultipageTask';
 import KnowledgeBase from '../views/KnowledgeBase';
 import SkillsHome from '../views/KnowledgeBase/SkillsHome';
 import SkillBucketDetail from '../views/KnowledgeBase/SkillBucketDetail';
@@ -36,6 +37,7 @@ const router = createBrowserRouter([
       { path: 'history', element: <History /> },
       { path: 'templates', element: <Templates /> },
       { path: 'projects', element: <Projects /> },
+      { path: 'projects/new-multipage', element: <CreateMultipageTask /> },
       { path: 'projects/:id', element: <ProjectDetail /> },
       { path: 'projects/:id/legacy', element: <LegacyProjectDetail /> },
       // 系统设置：从单页 Tabs 升级为容器 + 三个子路由（参照知识库二级菜单）

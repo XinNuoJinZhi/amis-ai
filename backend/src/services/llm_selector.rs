@@ -303,7 +303,7 @@ async fn fetch_history_success_rates(
     db: &DatabaseConnection,
     user_id: i32,
 ) -> Result<HashMap<i32, f32>, sea_orm::DbErr> {
-    let since = chrono::Local::now().naive_local() - Duration::days(30);
+    let since = chrono::Utc::now().naive_utc() - Duration::days(30);
 
     // 直接 SQL 聚合：同一用户、30 天内、有 llm_provider_id 的任务
     let stmt = Statement::from_sql_and_values(

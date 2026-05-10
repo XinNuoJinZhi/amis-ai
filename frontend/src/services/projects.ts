@@ -20,6 +20,8 @@ export interface ProjectTaskDetail extends ProjectTaskBrief {
   fix_attempts: number;
   adopted_at: string | null;
   updated_at: string;
+  /** 多页面任务的页面数量；单页任务为 1 */
+  page_count: number;
 }
 
 export interface PermissionConfig {

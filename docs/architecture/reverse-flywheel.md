@@ -53,3 +53,12 @@ created → running → (dev_ready | failed)
 下次任务检索时，backend `fetch_rag_extra_sections` 调 Python `/internal/search-code-samples` 取同 stack Top-3 `approved` 样例，拼 markdown section 通过 claw-agent-server `extra_system_sections` 注入 system_prompt 末尾。
 
 详细质量闭环见 [../upgrades/2026-04-25-rag-quality-loop.md](../upgrades/2026-04-25-rag-quality-loop.md)。
+
+## 多页任务并发控制（1.2.0）
+
+反向飞轮多页任务（[multipage_scheduler.rs](../../backend/src/services/multipage_scheduler.rs)）的独立模式（execution_strategy=isolated）下，N 个 claw-agent session 并发跑各自页面。为避免压垮 sandbox 资源，用 `tokio::sync::Semaphore` 限流：
+
+- env `MAX_CONCURRENT_SESSIONS` 控制同一 task 内并发 session 上限（默认 3）
+- 限流逻辑在 `run_isolated_pages_with_shared_context`：每个 page spawn 前 `acquire_owned()` 拿 permit，处理完 drop 自动释放
+- 超过限制的页面在 JoinSet 里 await permit，FIFO 排队
+- 全部完成后 `joinset.join_next()` 收集结果统一更新 DB

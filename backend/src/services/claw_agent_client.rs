@@ -41,6 +41,11 @@ pub struct CreateTaskRequest {
     /// claw-agent-server 会在 Skills 索引后面追加这些段。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_system_sections: Option<Vec<String>>,
+    /// 1.2.0：single-shot 模式（None / Some(false) = interactive）。
+    /// Some(true) = 跑完 initial turn 立刻结束，不等 follow-up——
+    /// 多页 scheduler 5 个调用点都该传 Some(true)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_shot: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

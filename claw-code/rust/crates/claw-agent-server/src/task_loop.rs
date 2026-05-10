@@ -72,6 +72,12 @@ pub struct TaskLoopConfig {
     /// 启动期一次性事件缓存。skills_loaded / system_prompt_built 这种在 WS 订阅建立前就发出的事件，
     /// 直接 push 到这里避免被 broadcast 丢弃。WS handler 订阅时先 replay 这些。
     pub initial_events: std::sync::Arc<std::sync::Mutex<Vec<TaskEvent>>>,
+    /// 1.2.0：single-shot 模式（多页 / batch 等"一锤子买卖"用法）。
+    /// 默认 false = interactive 模式（跑完 initial turn 后阻塞等 follow-up message，
+    /// 直到外部调 stop API 才结束 session），符合前端 IDE 聊天用法。
+    /// true  = 跑完 initial turn 立刻退出 spawn_blocking → 自然走到
+    /// `event_tx_outer.send(StatusChange(Succeeded))`，不卡 follow-up 死等。
+    pub single_shot: bool,
 }
 
 /// 决定走哪条后端路径
@@ -173,6 +179,7 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
         msg_rx,
         extra_system_sections,
         initial_events,
+        single_shot,
     } = config;
 
     // 根据 llm_config 决定走哪条后端路径：
@@ -546,6 +553,14 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
             summary.iterations
         );
         let _ = event_tx.send(TaskEvent::TurnComplete);
+
+        // 1.2.0 single-shot 模式（多页 / batch）：跑完 initial turn 直接退出，
+        // 不进 follow-up while loop。spawn_blocking 自然结束 → 外层 handle.await 拿到 Ok(()) →
+        // event_tx_outer.send(StatusChange(Succeeded)) 触发，watcher 拿到真终态。
+        if single_shot {
+            tracing::info!("Task {} single-shot 模式：跳过 follow-up while loop，自然 succeeded", task_id);
+            return Ok(());
+        }
 
         // 后续轮：阻塞接收追加消息，直到 channel 关闭
         let mut msg_rx = msg_rx;

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Button, Space, Tooltip } from 'antd';
-import { ReloadOutlined } from '@ant-design/icons';
-import { getDevStatus } from '../../../../services/projects';
+import { Button, Space, Tooltip, message } from 'antd';
+import { ReloadOutlined, SendOutlined } from '@ant-design/icons';
+import { addProjectTaskMessage, getDevStatus } from '../../../../services/projects';
 import { useColors } from '../../../../theme';
 
 interface Props {
@@ -31,6 +31,39 @@ export default function LogsPanel({ taskId }: Props) {
     return () => clearInterval(t);
   }, [taskId]);
 
+  /**
+   * 把 dev server 日志塞到 agent 对话里。
+   * 复用 ConsolePanel 同款机制（addProjectTaskMessage + inject-source 标记）。
+   * onlyErrors=true 时只塞 error/fail/cannot 行；false 时塞最近 100 行。
+   */
+  const injectToChat = async (onlyErrors: boolean) => {
+    const candidates = onlyErrors
+      ? logs.filter((l) => /error|fail|cannot|Error/i.test(l))
+      : logs;
+    if (candidates.length === 0) {
+      message.warning(onlyErrors ? '当前没有错误行' : '当前没有日志');
+      return;
+    }
+    const slice = candidates.slice(-100); // 最多 100 行，防 prompt 爆炸
+    const body = slice.join('\n');
+    const md = [
+      '<!-- amis-ai:inject-source=dev-server-logs -->',
+      onlyErrors
+        ? '用户从 dev server 日志栏塞入以下错误行，请协助分析并修复：'
+        : '用户从 dev server 日志栏塞入完整日志，请协助分析并修复：',
+      '',
+      '```log-dev-server',
+      body,
+      '```',
+    ].join('\n');
+    try {
+      await addProjectTaskMessage(taskId, md);
+      message.success(`已塞入 ${slice.length} 行日志到对话`);
+    } catch (e: any) {
+      message.error(`塞入失败：${e?.response?.data?.error || e.message}`);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: darkColors.bg }}>
       <div
@@ -54,6 +87,26 @@ export default function LogsPanel({ taskId }: Props) {
           dev server · tail -n 200
         </span>
         <Space size={4}>
+          <Tooltip title="把错误/警告塞入对话">
+            <Button
+              size="small"
+              icon={<SendOutlined />}
+              onClick={() => injectToChat(true)}
+              disabled={logs.length === 0}
+            >
+              塞错误
+            </Button>
+          </Tooltip>
+          <Tooltip title="把全部日志塞入对话">
+            <Button
+              size="small"
+              icon={<SendOutlined />}
+              onClick={() => injectToChat(false)}
+              disabled={logs.length === 0}
+            >
+              塞全部
+            </Button>
+          </Tooltip>
           <Tooltip title="刷新">
             <Button size="small" type="text" icon={<ReloadOutlined />} onClick={refresh} loading={loading} />
           </Tooltip>

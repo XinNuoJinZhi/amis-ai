@@ -5,6 +5,7 @@
   "engines": {
     "node": ">=20"
   },
+  "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev:h5": "uni --port 5173",
     "build:h5": "uni build",

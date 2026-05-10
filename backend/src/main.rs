@@ -22,6 +22,9 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub sandbox_url: String,
     pub claw_agent_url: String,
+    /// 1.2.0：multipage 任务收尾后调 agent /multipage/record 写 RAG。
+    /// 由 env `AGENT_URL` 注入，默认 `http://localhost:8000`。
+    pub agent_url: String,
     pub workdir_root: String,
     /// Skills 根目录（运行时读，与 claw-agent-server 共享）。
     /// A.6 引入：backend 不内置 skills（不用 include_str!），运行时直接读宿主机目录，
@@ -315,6 +318,52 @@ async fn main() {
          WHERE tech_stacks = '{}' AND tech_stack IS NOT NULL"
     ).await;
 
+    // 1.2.0 多页扩展：执行策略 + 复用策略 + 页数
+    let _ = db.execute_unprepared(
+        "ALTER TABLE project_generation_task
+            ADD COLUMN IF NOT EXISTS execution_strategy varchar(16) NOT NULL DEFAULT 'unified',
+            ADD COLUMN IF NOT EXISTS reuse_strategy varchar(16),
+            ADD COLUMN IF NOT EXISTS page_count integer NOT NULL DEFAULT 1"
+    ).await;
+    let _ = db.execute_unprepared(
+        "CREATE INDEX IF NOT EXISTS idx_pgt_strategy
+         ON project_generation_task (execution_strategy, reuse_strategy)
+         WHERE execution_strategy = 'isolated'"
+    ).await;
+
+    // 1.2 多页面飞轮：项目任务页面表
+    let _ = db.execute_unprepared(
+        "CREATE TABLE IF NOT EXISTS project_task_page (
+            id              SERIAL PRIMARY KEY,
+            task_id         INT NOT NULL REFERENCES project_generation_task(id) ON DELETE CASCADE,
+            page_idx        INT NOT NULL,
+            route_path      VARCHAR(255) NOT NULL,
+            amis_json       TEXT NOT NULL,
+            claw_session_id VARCHAR(64),
+            status          VARCHAR(16) NOT NULL DEFAULT 'pending',
+            started_at      TIMESTAMP,
+            finished_at     TIMESTAMP,
+            error_msg       TEXT,
+            created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+            UNIQUE (task_id, page_idx),
+            UNIQUE (task_id, route_path)
+        )"
+    ).await;
+    let _ = db.execute_unprepared(
+        "CREATE INDEX IF NOT EXISTS idx_ptp_task_status
+         ON project_task_page (task_id, status)"
+    ).await;
+    // 1.2 修复：早期建表用了 TIMESTAMPTZ 跟 entity DateTime(NaiveDateTime) 不兼容，
+    // 转回 TIMESTAMP（PG 自动转换，UTC 时间保留，丢时区无影响因为项目惯例不用 TZ）
+    let _ = db.execute_unprepared(
+        "ALTER TABLE project_task_page
+            ALTER COLUMN created_at TYPE TIMESTAMP,
+            ALTER COLUMN updated_at TYPE TIMESTAMP,
+            ALTER COLUMN started_at TYPE TIMESTAMP,
+            ALTER COLUMN finished_at TYPE TIMESTAMP"
+    ).await;
+
     // 任务级 LLM 选择 + 供应商能力分档的增量 migration
     let _ = db.execute_unprepared(
         "ALTER TABLE project_generation_task
@@ -360,6 +409,8 @@ async fn main() {
         .unwrap_or_else(|_| "http://localhost:8091".to_string());
     let claw_agent_url = std::env::var("CLAW_AGENT_URL")
         .unwrap_or_else(|_| "http://localhost:8090".to_string());
+    let agent_url = std::env::var("AGENT_URL")
+        .unwrap_or_else(|_| "http://localhost:8000".to_string());
     let workdir_root = std::env::var("SANDBOX_WORKDIR_ROOT")
         .unwrap_or_else(|_| "/var/amis-ai/workdirs".to_string());
 
@@ -396,6 +447,7 @@ async fn main() {
         http_client,
         sandbox_url,
         claw_agent_url,
+        agent_url,
         workdir_root,
         skills_root,
         template_registry,
@@ -444,6 +496,8 @@ async fn main() {
         .route("/api/projects/tasks/:id/events/history", get(handlers::project_events::list_events_history))
         .route("/api/projects/tasks/:id/dev-status", get(handlers::project_events::get_dev_status))
         .route("/api/projects/tasks/:id/pages", get(handlers::project_events::list_task_pages))
+        .route("/api/projects/tasks/:id/db-pages", get(handlers::project_pages::list_db_pages))
+        .route("/api/projects/tasks/:id/reuse-rate", get(handlers::project_pages::get_reuse_rate))
         .route("/api/projects/tasks/:id/permission-decision", post(handlers::project_events::post_permission_decision))
         .route("/api/projects/tasks/:id/runtime-error", post(handlers::project_events::post_runtime_error))
         // 2026-04-25 任务追踪日志归档查询 + 下载（任务归属校验）

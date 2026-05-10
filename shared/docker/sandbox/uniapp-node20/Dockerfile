@@ -2,8 +2,11 @@ FROM node:20-alpine
 
 RUN apk add --no-cache git bash curl ca-certificates tini
 
-# 启用 corepack 以便使用 pnpm
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+# 用 npm 直接装 pnpm 9.15.0 为真正的全局 binary，
+# 不走 corepack —— corepack 0.34+ 的 default pnpm 是 11.x，要求 Node 22+，
+# 在 Node 20 镜像上跑会触发 `node:sqlite ERR_UNKNOWN_BUILTIN_MODULE`。
+# pnpm 9.15.0 是 Node 20 兼容的最后一个 pnpm v9 稳定版，跟脚手架 packageManager 字段对齐。
+RUN npm install -g pnpm@9.15.0
 
 # 默认工作目录
 WORKDIR /workspace

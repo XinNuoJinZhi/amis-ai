@@ -19,6 +19,17 @@ use crate::services::{
 use crate::utils::jwt;
 use crate::AppState;
 
+/// 1.2.0 多页：单页输入（amis JSON + 可选路由路径）
+#[derive(Deserialize, Debug)]
+pub struct PageInput {
+    pub amis_json: String,
+    pub route_path: Option<String>,
+}
+
+fn default_execution_strategy() -> String {
+    "unified".to_string()
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateTaskPayload {
     pub amis_json: String,
@@ -59,6 +70,16 @@ pub struct CreateTaskPayload {
     /// - true：先试翻译器，fully_supported 就跳过 LLM；降级则回退 LLM
     #[serde(default)]
     pub enable_translator: Option<bool>,
+    // ── 1.2.0 多页字段 ──────────────────────────────────────────────────────
+    /// N 段 amis JSON。None 走旧的单页路径（兼容旧调用方）
+    #[serde(default)]
+    pub pages: Option<Vec<PageInput>>,
+    /// 执行策略：unified / isolated；缺省 unified
+    #[serde(default = "default_execution_strategy")]
+    pub execution_strategy: String,
+    /// 复用策略（仅 isolated 时有意义）
+    #[serde(default)]
+    pub reuse_strategy: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,7 +210,7 @@ pub async fn create_task(
     //    2026-04 性能优化：多维字段（platform / template_name / platforms / tech_stacks / ui_libs /
     //    selected_skill_buckets）原本因 entity 缺失要走 INSERT + 原生 SQL UPDATE 二次写，现在 entity 补全，
     //    一次 ActiveModel Insert 搞定，少一次 DB round-trip。
-    let now = chrono::Local::now().naive_local();
+    let now = chrono::Utc::now().naive_utc();
     let template_name_for_db: Option<String> = match template_name.as_deref() {
         Some("__blank__") => None,
         other => other.map(|s| s.to_string()),
@@ -215,6 +236,10 @@ pub async fn create_task(
         tech_stacks: Set(tech_stacks_arr.clone()),
         ui_libs: Set(ui_libs_arr.clone()),
         selected_skill_buckets: Set(explicit_buckets_arr.clone()),
+        // 1.2.0 多页字段
+        execution_strategy: Set(payload.execution_strategy.clone()),
+        reuse_strategy: Set(payload.reuse_strategy.clone()),
+        page_count: Set(payload.pages.as_ref().map(|p| p.len() as i32).unwrap_or(1)),
         ..Default::default()
     };
 
@@ -231,6 +256,33 @@ pub async fn create_task(
 
     let task_id = saved.id;
     let task_id_str = format!("task-{}", task_id);
+
+    // 1.2.0：如果传了 pages，写入 project_task_page 子表
+    if let Some(pages_input) = &payload.pages {
+        use crate::entity::project_task_page;
+        let now_pages = chrono::Utc::now().naive_utc();
+        for (idx, p) in pages_input.iter().enumerate() {
+            let route = match &p.route_path {
+                Some(r) if !r.trim().is_empty() => r.trim().to_string(),
+                _ => crate::services::route_inferer_client::infer_route_path(
+                    &p.amis_json,
+                    idx as i32,
+                )
+                .await,
+            };
+            let page_active = project_task_page::ActiveModel {
+                task_id: Set(task_id),
+                page_idx: Set(idx as i32),
+                route_path: Set(route),
+                amis_json: Set(p.amis_json.clone()),
+                status: Set("pending".to_string()),
+                created_at: Set(now_pages),
+                updated_at: Set(now_pages),
+                ..Default::default()
+            };
+            let _ = page_active.insert(&state.db).await;
+        }
+    }
 
     // 2026-04-25 任务追踪日志：初始化归档目录（mode=disabled 时是 no-op）
     let _ = crate::services::tracelog::init_task_tracelog(&state, task_id).await;
@@ -311,7 +363,7 @@ pub async fn create_task(
                             })
                             .to_string(),
                         ),
-                        created_at: Set(chrono::Local::now().naive_local()),
+                        created_at: Set(chrono::Utc::now().naive_utc()),
                         ..Default::default()
                     }
                     .insert(&db_bg)
@@ -336,7 +388,7 @@ pub async fn create_task(
                             })
                             .to_string(),
                         ),
-                        created_at: Set(chrono::Local::now().naive_local()),
+                        created_at: Set(chrono::Utc::now().naive_utc()),
                         ..Default::default()
                     }
                     .insert(&db_bg)
@@ -362,7 +414,7 @@ pub async fn create_task(
                     })
                     .to_string(),
                 ),
-                created_at: Set(chrono::Local::now().naive_local()),
+                created_at: Set(chrono::Utc::now().naive_utc()),
                 ..Default::default()
             }
             .insert(&db_bg)
@@ -400,6 +452,43 @@ pub async fn create_task(
         }
     }
 
+    // 1.2.0 多页：跳过单 claw-agent 主 session，spawn multipage_scheduler::dispatch
+    // 跑独立 N 个 page session（sandbox 已就绪，workdir 已 ready，scaffold 已复制）
+    if payload.pages.is_some() {
+        let active = project_generation_task::ActiveModel {
+            id: Set(task_id),
+            sandbox_id: Set(Some(sandbox_info.id.clone())),
+            preview_port: Set(Some(sandbox_info.preview_port as i32)),
+            workdir_path: Set(Some(sandbox_info.workdir.clone())),
+            status: Set("running".to_owned()),
+            updated_at: Set(chrono::Utc::now().naive_utc()),
+            ..Default::default()
+        };
+        if let Err(e) = active.update(&state.db).await {
+            tracing::error!("更新多页任务状态失败: {}", e);
+        }
+
+        let state_clone = state.clone();
+        let task_id_dispatch = task_id;
+        tokio::spawn(async move {
+            if let Err(e) = crate::services::multipage_scheduler::dispatch(
+                &state_clone, task_id_dispatch,
+            ).await {
+                tracing::error!("multipage dispatch task={} 失败: {}", task_id_dispatch, e);
+            }
+        });
+
+        return Json(json!({
+            "task_id": task_id,
+            "status": "running",
+            "page_count": payload.pages.as_ref().map(|p| p.len()).unwrap_or(0),
+            "sandbox_id": sandbox_info.id,
+            "workdir_path": sandbox_info.workdir,
+            "preview_port": sandbox_info.preview_port,
+        }))
+        .into_response();
+    }
+
     // 3. 调 claw-agent-server 创建会话
     let claw = ClawAgentClient::new(state.http_client.clone(), state.claw_agent_url.clone());
     let initial_message = build_initial_prompt(&payload.amis_json, payload.extra_prompt.as_deref());
@@ -431,6 +520,8 @@ pub async fn create_task(
         } else {
             Some(extra_system_sections)
         },
+        // 单页 IDE 路径走 interactive 模式（前端 WS 会持续追加 follow-up message）
+        single_shot: None,
     };
 
     let claw_resp = match claw.create_task(claw_req).await {
@@ -455,7 +546,7 @@ pub async fn create_task(
         workdir_path: Set(Some(sandbox_info.workdir.clone())),
         claw_session_id: Set(Some(claw_resp.id.clone())),
         status: Set("running".to_owned()),
-        updated_at: Set(chrono::Local::now().naive_local()),
+        updated_at: Set(chrono::Utc::now().naive_utc()),
         ..Default::default()
     };
 
@@ -484,7 +575,7 @@ pub async fn create_task(
                 task_id: Set(task_id),
                 role: Set("user".to_owned()),
                 content: Set(amis_json_bg),
-                created_at: Set(chrono::Local::now().naive_local()),
+                created_at: Set(chrono::Utc::now().naive_utc()),
                 ..Default::default()
             }
             .insert(&db_bg)
@@ -510,7 +601,7 @@ pub async fn create_task(
                     "complexity_score": decision_bg.complexity_score,
                     "reason": decision_bg.reason,
                 }).to_string()),
-                created_at: Set(chrono::Local::now().naive_local()),
+                created_at: Set(chrono::Utc::now().naive_utc()),
                 ..Default::default()
             }
             .insert(&db_bg)
@@ -645,7 +736,7 @@ pub async fn add_message(
         task_id: Set(id),
         role: Set("user".to_owned()),
         content: Set(payload.content),
-        created_at: Set(chrono::Local::now().naive_local()),
+        created_at: Set(chrono::Utc::now().naive_utc()),
         ..Default::default()
     }
     .insert(&state.db)
@@ -694,7 +785,7 @@ pub async fn stop_task(
     let mut active: project_generation_task::ActiveModel = task.into();
     let stopped_id = active.id.clone().unwrap();
     active.status = Set("stopped".to_owned());
-    active.updated_at = Set(chrono::Local::now().naive_local());
+    active.updated_at = Set(chrono::Utc::now().naive_utc());
     let _ = active.update(&state.db).await;
 
     crate::services::tracelog::finalize_task_tracelog(&state, stopped_id, "stopped").await;
@@ -784,7 +875,7 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                         );
                         let mut active: project_generation_task::ActiveModel = task.into();
                         active.status = Set("failed".to_string());
-                        active.updated_at = Set(chrono::Local::now().naive_local());
+                        active.updated_at = Set(chrono::Utc::now().naive_utc());
                         let _ = active.update(&state.db).await;
 
                         let _ = project_task_event::ActiveModel {
@@ -799,7 +890,7 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                                     "fix_attempts": fix_attempts_local
                                 }
                             }).to_string()),
-                            created_at: Set(chrono::Local::now().naive_local()),
+                            created_at: Set(chrono::Utc::now().naive_utc()),
                             ..Default::default()
                         }
                         .insert(&state.db)
@@ -820,7 +911,7 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                 let prev_status = task.status.clone();
                 let mut active: project_generation_task::ActiveModel = task.into();
                 active.status = Set("succeeded".to_string());
-                active.updated_at = Set(chrono::Local::now().naive_local());
+                active.updated_at = Set(chrono::Utc::now().naive_utc());
                 let _ = active.update(&state.db).await;
 
                 // 落 status_change 事件，让前端 history REST 能看到状态切换
@@ -832,7 +923,7 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                         "data": "succeeded",
                         "from": prev_status,
                     }).to_string()),
-                    created_at: Set(chrono::Local::now().naive_local()),
+                    created_at: Set(chrono::Utc::now().naive_utc()),
                     ..Default::default()
                 }
                 .insert(&state.db)
@@ -884,7 +975,7 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                 if attempts >= MAX_FIX_ATTEMPTS {
                     let mut active: project_generation_task::ActiveModel = task.into();
                     active.status = Set("failed".to_string());
-                    active.updated_at = Set(chrono::Local::now().naive_local());
+                    active.updated_at = Set(chrono::Utc::now().naive_utc());
                     let _ = active.update(&state.db).await;
                     tracing::warn!(
                         "task {} runtime-error reached max fix attempts ({}), giving up auto-fix \
@@ -949,14 +1040,14 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                 let mut active: project_generation_task::ActiveModel = task.into();
                 active.status = Set("running".to_string());
                 active.fix_attempts = Set(attempts + 1);
-                active.updated_at = Set(chrono::Local::now().naive_local());
+                active.updated_at = Set(chrono::Utc::now().naive_utc());
                 let _ = active.update(&state.db).await;
 
                 let _ = project_task_message::ActiveModel {
                     task_id: Set(task_id),
                     role: Set("system".to_owned()),
                     content: Set(fix_message),
-                    created_at: Set(chrono::Local::now().naive_local()),
+                    created_at: Set(chrono::Utc::now().naive_utc()),
                     ..Default::default()
                 }
                 .insert(&state.db)
@@ -999,7 +1090,7 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                     // 到达上限：标记为 failed，但 watcher 不退出，留给用户手动救场
                     let mut active: project_generation_task::ActiveModel = task.into();
                     active.status = Set("failed".to_string());
-                    active.updated_at = Set(chrono::Local::now().naive_local());
+                    active.updated_at = Set(chrono::Utc::now().naive_utc());
                     let _ = active.update(&state.db).await;
                     tracing::warn!(
                         "task {} reached max fix attempts ({}), giving up auto-fix \
@@ -1062,7 +1153,7 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                 // 更新 fix_attempts
                 let mut active: project_generation_task::ActiveModel = task.into();
                 active.fix_attempts = Set(attempts + 1);
-                active.updated_at = Set(chrono::Local::now().naive_local());
+                active.updated_at = Set(chrono::Utc::now().naive_utc());
                 let _ = active.update(&state.db).await;
 
                 // 写入 task_message 作为 system 消息（方便前端看到修复轨迹）
@@ -1070,7 +1161,7 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                     task_id: Set(task_id),
                     role: Set("system".to_owned()),
                     content: Set(fix_message),
-                    created_at: Set(chrono::Local::now().naive_local()),
+                    created_at: Set(chrono::Utc::now().naive_utc()),
                     ..Default::default()
                 }
                 .insert(&state.db)
@@ -1112,20 +1203,15 @@ fn workdir_changed_since_task_start(
     workdir: &str,
     task_created_at: chrono::NaiveDateTime,
 ) -> bool {
-    use chrono::TimeZone;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    // task.created_at 的写入方式是 `chrono::Local::now().naive_local()`（本地时间，无时区信息），
-    // 这里必须把它按本地时区还原回 UTC timestamp 再跟文件 mtime 比对。
-    // 早期版本误用 `.and_utc().timestamp()`（把 naive 当 UTC），在 GMT+8 之类的环境下会比真实
-    // 创建时间早 8 小时——`since` 直接跑到任务创建后好几小时去了，所有文件 mtime 全部小于它，
-    // 防御逻辑就把合法任务误判成 "workdir 一字未改" 标 failed（task 102 实锤）。
-    let secs = chrono::Local
-        .from_local_datetime(&task_created_at)
-        .single()
-        .map(|dt| dt.timestamp())
-        // 夏令时切换瞬间会出现 single()=None；保守 fallback 到 UTC 解读，
-        // 比错判 failed 强（仅一次 LocalResult::Ambiguous 的边界情况）。
-        .unwrap_or_else(|| task_created_at.and_utc().timestamp());
+    // 1.2.0 起：task.created_at 统一按 `chrono::Utc::now().naive_utc()` 写入（无时区 naive UTC），
+    // 直接 `and_utc().timestamp()` 还原成 UNIX 秒即可。
+    //
+    // 历史背景：1.1 及更早版本里这里是 Local naive，用 `Local.from_local_datetime` 折算回 UTC
+    // 才能与文件 mtime 对齐；现在写入侧切到 Utc，逻辑随之简化。1.1 旧 task 行（DB 里是 Local
+    // naive）走到这里会被早 8 小时解读，但旧任务都已结束、不再走 dev_status_watcher 防御分支，
+    // 影响仅限于"用户重启 backend 后还在 running 的旧 task"——可接受。
+    let secs = task_created_at.and_utc().timestamp();
     if secs < 0 {
         return true;
     }
@@ -1367,7 +1453,7 @@ async fn try_translate_amis(
                     "data": {"unsupported_types": unsupported, "notes": notes}
                 })
                 .to_string()),
-                created_at: Set(chrono::Local::now().naive_local()),
+                created_at: Set(chrono::Utc::now().naive_utc()),
                 ..Default::default()
             }
             .insert(&db_bg)
@@ -1422,7 +1508,7 @@ async fn try_translate_amis(
                     "data": {"files": files_bg, "notes": notes}
                 })
                 .to_string()),
-                created_at: Set(chrono::Local::now().naive_local()),
+                created_at: Set(chrono::Utc::now().naive_utc()),
                 ..Default::default()
             }
             .insert(&db_bg)
@@ -1437,7 +1523,7 @@ async fn try_translate_amis(
         preview_port: Set(Some(sandbox_info.preview_port as i32)),
         workdir_path: Set(Some(sandbox_info.workdir.clone())),
         status: Set("running".to_owned()),
-        updated_at: Set(chrono::Local::now().naive_local()),
+        updated_at: Set(chrono::Utc::now().naive_utc()),
         ..Default::default()
     };
     if let Err(e) = active.update(&state.db).await {
@@ -1478,7 +1564,7 @@ async fn mark_task_failed(state: &AppState, task_id: i32, reason: &str) {
     {
         let mut active: project_generation_task::ActiveModel = task.into();
         active.status = Set("failed".to_owned());
-        active.updated_at = Set(chrono::Local::now().naive_local());
+        active.updated_at = Set(chrono::Utc::now().naive_utc());
         let _ = active.update(&state.db).await;
     }
 
@@ -1486,7 +1572,7 @@ async fn mark_task_failed(state: &AppState, task_id: i32, reason: &str) {
         task_id: Set(task_id),
         event_type: Set("status_change".to_owned()),
         payload: Set(json!({"status": "failed", "reason": reason}).to_string()),
-        created_at: Set(chrono::Local::now().naive_local()),
+        created_at: Set(chrono::Utc::now().naive_utc()),
         ..Default::default()
     }
     .insert(&state.db)
@@ -1827,7 +1913,7 @@ async fn fetch_rag_extra_sections(
             task_id: Set(task_id),
             event_type: Set("rag_samples_injected".to_owned()),
             payload: Set(event_payload.to_string()),
-            created_at: Set(chrono::Local::now().naive_local()),
+            created_at: Set(chrono::Utc::now().naive_utc()),
             ..Default::default()
         }
         .insert(&db_bg)
@@ -1998,7 +2084,7 @@ pub async fn adopt_task(
     }
 
     // 4. INSERT code_sample
-    let now = chrono::Local::now().naive_local();
+    let now = chrono::Utc::now().naive_utc();
     let amis_summary = body.amis_json_summary.clone().or_else(|| {
         // 兜底：用 amis_json 前 200 字
         Some(task.amis_json.chars().take(200).collect())

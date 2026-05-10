@@ -125,7 +125,7 @@ pub async fn create_provider(
         base_url: Set(payload.base_url),
         api_key: Set(payload.api_key),
         is_active: Set(payload.is_active.unwrap_or(true)),
-        created_at: Set(chrono::Local::now().naive_local()),
+        created_at: Set(chrono::Utc::now().naive_utc()),
         protocol: Set(protocol),
         capability_tier: Set(capability_tier),
         preferred_model: Set(payload.preferred_model.filter(|s| !s.is_empty())),

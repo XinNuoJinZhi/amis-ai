@@ -50,6 +50,13 @@ pub struct Model {
     pub tech_stacks: Vec<String>,
     /// 多维 UI 库数组
     pub ui_libs: Vec<String>,
+    // 1.2.0 多页字段（W1.1 + W1.2 已建 DB 列）
+    /// 执行策略：unified（单 Agent）/ isolated（每页独立 Agent）
+    pub execution_strategy: String,
+    /// 复用策略（仅 isolated 时有意义）
+    pub reuse_strategy: Option<String>,
+    /// 本次任务总页数（单页任务默认 1）
+    pub page_count: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

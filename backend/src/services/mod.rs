@@ -1,7 +1,12 @@
 pub mod amis_translator_client;
 pub mod claw_agent_client;
+pub mod global_prompt_builder;
 pub mod llm_selector;
+pub mod multipage_reuse;
+pub mod multipage_scheduler;
+pub mod multipage_session_watcher;
 pub mod quality_judge;
+pub mod route_inferer_client;
 pub mod sandbox_client;
 pub mod template_registry;
 pub mod tracelog;
