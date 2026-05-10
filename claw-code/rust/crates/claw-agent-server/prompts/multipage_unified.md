@@ -31,6 +31,17 @@
 - 跨页跳转用 `uni.navigateTo` 且路径必须存在于 pages.json
 - 共享组件跨页复用（不要每页 copy）
 
+## ⚠️ 严禁执行的命令
+
+以下命令会让 bash tool 永久 blocking、整个 session 30 分钟超时失败：
+
+- `pnpm run dev:h5` / `pnpm dev` / `pnpm start` —— 前台 dev server，永不返回
+- `pnpm install` —— 长时间网络 + 写盘，sandbox 已预装依赖，不需要再装
+- `pnpm build` / `pnpm run build:h5` —— 长时间编译，本任务不需要 build 产物
+
+dev server 由外部 watcher 自动启动 + 健康检查，**你不需要启动验证**。
+依赖也已经在 sandbox 镜像里装好，**你不需要 install**。
+
 ## 完成后
 
-- 启动 dev server（`pnpm run dev:h5`）验证项目可运行 + 全部路由可访问
+- 用一段话总结生成的页面 / 共享组件 / 路由表，就可以结束本轮对话。

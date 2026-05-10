@@ -737,7 +737,13 @@ fn build_page_prompt(
     }
     out.push_str(&format!(
         "请基于以下 amis JSON 在 src/pages{route} 路径下生成对应的 UniApp Vue 页面文件，\
-         并在 src/pages.json 注册路由。\n\namis JSON：\n{amis}",
+         并在 src/pages.json 注册路由。\n\n\
+         ⚠️ 严禁执行 `pnpm run dev:h5` / `pnpm dev` / `pnpm install` / `pnpm build` 等\
+         前台或长时间 blocking 命令——dev server 由外部 watcher 自动启动 + 健康检查，\
+         依赖也已在 sandbox 镜像预装好。一旦你跑这类命令，bash tool 永不返回，\
+         整个 session 会 30 分钟超时失败。\n\n\
+         完成 .vue 文件创建 + pages.json 路由注册后，用一段话总结就可以结束本轮对话。\n\n\
+         amis JSON：\n{amis}",
         route = page.route_path,
         amis = page.amis_json,
     ));
