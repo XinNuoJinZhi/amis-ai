@@ -21,39 +21,54 @@
 | 多页前端 PagesPanel + 输入页 | ✅ `frontend/src/views/Projects/CreateMultipageTask.tsx` |
 | 启动脚本代理坑修复 | ✅ `start-services.sh` 启动子进程时清代理 env |
 
-总计 **30+ commits 在 dev/1.2.0**、5 个 e2e 脚本 + 15 任务全量评测。
+总计 **35 commits 在 dev/1.2.0**、5 个 e2e 脚本 + 3 次全量评测（最终 15/15 全 GA）。
 
-## 5 策略评测矩阵（W7.2 真实数据）
+## 5 策略评测矩阵（W7.2 最终数据）
 
-数据集：3 个 prompt（3/4/5 页）× 5 策略 = 15 任务，跑完耗时 2h15min。
+数据集：3 个 prompt（3/4/5 页）× 5 策略 = 15 任务。
+最终 evaluation（20260510T002700Z）跑完耗时 30 分钟，**15/15 全部 succeeded**。
 
-### 策略汇总
+> 历史：第一次跑（20260509T054605Z, 2h15min）暴露了 6 个 P0 issue（R1/R3/Unified 全挂）。
+> 修复后第三次跑全过——5 策略全 GA。详见底部 "1.2 收尾路上修过的 6 个 P0 issue"。
 
-| 策略 | 任务成功率 | 平均页通过率 | 平均 LLM 调用 | 平均 LLM 耗时 | 平均总耗时 | 1.2 推荐 |
+### 策略汇总（最终数据）
+
+| 策略 | 任务成功率 | 页通过率 | 平均 LLM 调用 | 平均 LLM 耗时 | 平均总耗时 | 1.2 推荐 |
 |---|---|---|---|---|---|---|
-| **R4 baseline** | **100%** (3/3) | **100%** | 96.7 次 | 202s | 122s | ✅ **GA 推生产** |
-| **R2 prompt** | **100%** (3/3) | 92% (11/12) | 97.0 次 | 176s | 161s | ✅ **GA 推生产** |
-| R3 refactor | 0% (0/3) | 100% (12/12)\* | 95.7 次 | 198s | 627s | ⚠️ Experimental |
-| R1 skeleton | 0% (0/3) | 0% | 0 次 | 0s | 1147s | ⚠️ Experimental |
-| Unified | 0% (0/3) | 0% | 0 次 | 0s | 3s | ⚠️ Experimental |
+| **R4 baseline** | **100%** (3/3) | **100%** | 60.3 次 | 99s | 106s | ✅ **GA** |
+| **R2 prompt** | **100%** (3/3) | **100%** | 73.7 次 | 113s | 94s | ✅ **GA** |
+| **R1 skeleton** | **100%** (3/3) | **100%** | 89.0 次 | 128s | 110s | ✅ **GA** |
+| **R3 refactor** | **100%** (3/3) | **100%** | 114.0 次 | 167s | 158s | ✅ **GA** |
+| **Unified** | **100%** (3/3) | **100%** | **46.0 次** | **67s** | 100s | ✅ **GA** |
 
-\* R3 的"页生成全 OK 但重构后处理 100% 挂"——失败定位清晰，重构阶段是后续重点修复目标。
+### 每 prompt 明细（最终）
 
-### 每 prompt 明细
-
-详见 `eval/multipage-1.2/results-<timestamp>.md`（不入 git，每次跑会带时间戳产出）。本次跑（20260509T054605Z）的关键观察：
-
-- **p1 基础三页**：R4 89s / R2 160s 全过；R1 卡死 28.7min；R3 90s 快速失败但页 3/3 OK；Unified 1.3s 极快失败
-- **p2 后台四页**：R4 202s / R2 189s 全过；R1 卡死 28.8min；R3 4/4 页 OK 但重构卡 30min；Unified 18.6s 极快失败
-- **p3 电商五页**：R4 100% / R2 4/5 页（1 页失败但 task succeeded）；R1 这次反而 2.2s 极快失败；R3 5/5 页 OK 但重构 30min；Unified 18.9s 极快失败
+| prompt | R4 | R2 | R1 | R3 | Unified |
+|---|---|---|---|---|---|
+| p1 基础三页 | 3/3, 102s | 3/3, 43s | 3/3, 92s | 3/3, 145s | 3/3, 88s |
+| p2 后台四页 | 4/4, 99s | 4/4, 87s | 4/4, 102s | 4/4, 124s | 4/4, 100s |
+| p3 电商五页 | 5/5, 118s | 5/5, 151s | 5/5, 136s | 5/5, 206s | 5/5, 112s |
 
 ### 关键 finding
 
-1. **R4 + R2 是 1.2 GA 推荐**：3 prompt 全过、性能稳。R2 比 R4 慢 32%（多注入清单 prompt），但 R2 在更复杂场景下应该有复用价值（本次 prompt 集没有强复用诱导，下版本补"业务模型驱动"prompt 集）。
-2. **R3 失败模式清晰**：所有 prompt 都"页生成 100% OK 但重构后处理 100% 挂"——固定的失败点，下版本重点修。
-3. **R1 失败模式不一致**：要么卡死 28+ min，要么 2.2s 极快挂——实现有 race condition / 前置检查问题。
-4. **Unified 创建 session 后立刻挂**：0 LLM 调用、极快失败——可能 prompt 太长或协议字段。
-5. **复用率全 0.00**：本次 prompt 集太"独立"无共享需求，不能体现 R1/R2 的设计价值——这是 W7.2 数据集的局限，不是策略本身的局限。
+1. **5 策略全 GA**：R4/R2/R1/R3/Unified 在 3 个 prompt 上 15/15 任务成功率 + 100% 页通过率。
+2. **Unified 最省 LLM 也最快**：46 次调用、67s LLM 耗时——只跑一个 session 处理多页，省了 N 次 session 启动开销。**多页生成场景默认推 Unified**。
+3. **R3 最重**：114 次调用、167s LLM 耗时——多了重构后处理阶段，理论上能提复用率（本次数据集触发不到）。**复杂场景需要"事后整合"时选 R3**。
+4. **R1 折中**：89 次调用、128s——骨架先行 + 各页填充 + cleanup 三阶段，结构化最强。**需要严格 shared/ 共享时选 R1**。
+5. **R2 prompt 注入轻量**：73 次调用、113s——只在每页 prompt 头注入清单，不开新 session。**轻度共享场景的折中**。
+6. **R4 是 baseline 兜底**：60 次调用、99s，无任何复用机制——**纯独立页面场景选 R4**。
+7. **复用率全 0.00**：本次 prompt 集都太"独立"无共享需求，不是策略问题——下版本补"业务模型驱动"prompt 集（如多页都用同一种用户/订单 model）才能让 R1/R2/R3 的复用价值跑出来。
+
+### 1.2 收尾路上修过的 6 个 P0 issue
+
+第一次评测发现 R1/R3/Unified 全挂，深挖后修了：
+
+| # | Issue | 根因 | 修复 commit |
+|---|---|---|---|
+| P0-1 | page 表 claw_session_id 没回写 | scheduler 5 处 spawn 都只在终态分支才 update | `e6c45b9` |
+| P0-2 + P0-5 + P0-6 | Unified / R3 / R1 全 0 LLM 调用立即失败 | 4 处 stage CreateTaskRequest 都缺 model / tech_stack / llm_config（裸奔），claw-agent 拿不到 LLM 配置就 status_change=failed | `e6c45b9`（一个 helper 三鸟） |
+| P0-3 | R1 cleanup 阶段 30 分钟卡死 | cleanup prompt 第 4 步 "启动 dev server 验证不报错" → LLM 跑 `pnpm run dev:h5` 前台 blocking → bash tool 永不返回 | `dd04644` |
+| P0-4 | R2 5+ 页偶发单页失败 + page 阶段卡 28 分钟 | 同款 prompt 教坏 LLM —— `build_page_prompt` + `multipage_unified.md` 也让 LLM 启动 dev server | `ef90e24` |
 
 ## 关键代码路径
 
@@ -98,16 +113,16 @@
 
 [`eval/multipage-1.2/prompts.json`](../../eval/multipage-1.2/prompts.json)：3 个核心 prompt（3/4/5 页）。
 
-## 已知问题（1.2 不阻塞，下版本修）
+## 已知问题
 
-| ID | 问题 | 影响 | 状态 |
-|---|---|---|---|
-| 1 | R3 重构后处理阶段 100% 失败 | R3 不可用 | 评测捕获，下版本重点修 |
-| 2 | R1 骨架阶段双重失败模式（卡死 / 极快挂） | R1 不可用 | 评测捕获，下版本重做 |
-| 3 | Unified 创建 session 即挂 | Unified 不可用 | 评测捕获，下版本查 prompt 长度 |
-| 4 | page 表 `claw_session_id` 列没回写 | 调试不便（需从 events 反查 session） | 小修，下版本顺手 |
-| 5 | `R2` 复杂场景偶发单页失败（p3：4/5） | 92% 页通过率 | 数据点已采集，看 5+ 页是否同样 |
-| 6 | sandbox tool_call 偶发卡 5-10 分钟（W6.5 task 128 案例） | 不影响最终成功，但拉长尾延迟 | 后续看是 sandbox 还是 LLM 工具循环 |
+✅ **全部修完**。第一次评测发现的 6 个 P0 issue 在 1.2 收尾路上全部根治（详见 5 策略评测矩阵章节末尾的 "1.2 收尾路上修过的 6 个 P0 issue" 表）：
+
+- ~~R3 重构后处理 100% 失败~~ → cleanup prompt 严禁启动 dev server，修完
+- ~~R1 骨架阶段双重失败模式~~ → 跟 R3 同根因 + page prompt 也修，修完
+- ~~Unified 创建 session 即挂~~ → 跟 R3 同根因（缺 LLM 配置），一个 helper 三鸟
+- ~~page 表 `claw_session_id` 没回写~~ → 加 `update_page_session_id_early` helper，修完
+- ~~R2 5+ 页偶发单页失败 (92%)~~ → 同 dev server 卡死，修完
+- ~~sandbox tool_call 偶发卡 5-10 分钟~~ → 真因不是 sandbox，是 LLM 跑前台 dev server，prompt 修完根治
 
 ## 升级路径
 
@@ -119,9 +134,13 @@ DB schema 兼容：`project_task_page` 表已建好（`alter table` 兼容已建
 
 - 33 个测试在 W6 节点全绿（multipage_reuse 4 + multipage_recorder 3 + RAG strategy filter 3 + sandbox reuse_metrics 3 + Semaphore 并发 2 + 1.1 旧测试 13 + 1.2 早期 3 + cargo build / tsc 0 error）
 - 5 个 e2e 脚本（`eval/multipage-1.2/test_e2e_*.sh`，5 策略各一个）
-- W7.2 全量评测 15/15 任务（3 prompts × 5 strategies，2h15min）
+- **W7.2 最终评测 15/15 全 succeeded（3 prompts × 5 strategies，30min）**——所有策略 100% 任务成功率 + 100% 页通过率
 
 ## 接力 / 下一步
 
-- 1.2 阶段已完成，等用户拍板 PR 合 main + tag v1.2.0
-- 1.3 启动条件：把 R3 重构 / R1 骨架 / Unified 三个 experimental 策略修到 GA；补"业务模型驱动"prompt 集让复用率有意义；补 page 表 `claw_session_id` 回写
+1.2 阶段已完整完成，等用户拍板 PR 合 main + tag v1.2.0。
+
+1.3 启动条件（增量优化，不阻塞 1.2）：
+- 补"业务模型驱动"prompt 集（如多页都用同一种用户/订单 model），让 R1/R2/R3 的复用率指标真正跑出来（本次 prompt 集都太独立，复用率全 0.00）
+- 把 5 策略的复用率 / token / 耗时差异沉淀成"该选哪个策略"的决策辅助 UI（让用户根据场景一键选）
+- 看 task 128 那种 sandbox tool_call 偶发卡 5-10 分钟（已确认不是 sandbox 问题而是 LLM 路径，但仍可加 bash tool 超时兜底防御）
