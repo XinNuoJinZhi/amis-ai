@@ -13,6 +13,7 @@ import {
   message,
 } from 'antd';
 import {
+  AppstoreAddOutlined,
   DeleteOutlined,
   EyeOutlined,
   PlusOutlined,
@@ -280,6 +281,14 @@ export default function ProjectsList() {
         <Space size={8}>
           <Button icon={<ReloadOutlined />} onClick={() => void refresh()} size="small">
             刷新
+          </Button>
+          <Button
+            icon={<AppstoreAddOutlined />}
+            onClick={() => navigate('/projects/new-multipage')}
+            size="small"
+            title="新建多页项目（5 策略对比 / 共享组件 / 路由表）"
+          >
+            新建多页任务
           </Button>
           <Button
             type="primary"
