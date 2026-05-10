@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .plugin_parser import ZcPluginParser, to_markdown
+from .interface_parser import ZcInterfaceParser, parsed_to_markdown as iface_to_markdown
 
 ZC_PACKAGES = Path(
     "/home/karl/Working/TianXing/amis-codegen/.claude/skills/zc_amis/assets/packages"
@@ -159,6 +160,132 @@ ZC report-forms 套件按图表类型分发，建议在 schema 里指定 `chartT
 """
 
 
+# P0 全新 amis 主包 renderers/（用 interface_parser）
+NEW_MAIN_RENDERERS: list[str] = [
+    "DepartmentSelect.tsx",
+    "UserSelect.tsx",
+    "DocEntity.tsx",
+    "DynamicForm.tsx",
+    "ModelForm.tsx",
+    "ModelTable.tsx",
+    "ENumber.tsx",
+    "Bar.tsx",
+    "Line.tsx",
+    "Pie.tsx",
+    "Gauge.tsx",
+    "Funnel.tsx",
+    "Map.tsx",
+    "WordCloud.tsx",
+    "ReportFormsConfig.tsx",
+]
+# AI/ 和 report/ 子目录用 glob 递归收集（如有 schema interface 自动抽出）
+NEW_MAIN_RENDERER_GLOBS: list[str] = ["AI/**/*.tsx", "report/**/*.tsx"]
+
+# P0 改造 amis 主包 renderers/（用 interface_parser）
+PATCHED_MAIN_RENDERERS: list[str] = [
+    "Action.tsx",
+    "App.tsx",
+    "CRUD.tsx",
+    "Chart.tsx",
+    "Dialog.tsx",
+    "Drawer.tsx",
+    "DropDownButton.tsx",
+    "Mapping.tsx",
+    "Number.tsx",
+    "OfficeViewer.tsx",
+    "Page.tsx",
+    "Plain.tsx",
+    "Property.tsx",
+    "QuickEdit.tsx",
+    "Service.tsx",
+    "SparkLine.tsx",
+    "Tag.tsx",
+    "Wizard.tsx",
+    "Form/Checkboxes.tsx",
+    "Form/Combo.tsx",
+    "Form/ConditionBuilder.tsx",
+    "Form/IconSelect.tsx",
+    "Form/IconSelectStore.tsx",
+    "Form/InputDate.tsx",
+    "Form/InputImage.tsx",
+    "Form/InputSubForm.tsx",
+    "Form/InputTable.tsx",
+    "Form/InputTag.tsx",
+    "Form/JSONSchemaEditor.tsx",
+    "Form/NestedSelect.tsx",
+    "Form/Picker.tsx",
+    "Form/Select.tsx",
+    "Form/StaticHoc.tsx",
+    "Form/Switch.tsx",
+    "Form/TreeSelect.tsx",
+    "Table/Cell.tsx",
+    "Table/index.tsx",
+    "Table2/index.tsx",
+]
+
+
+def _run_main_renderer_files(
+    parser: ZcInterfaceParser,
+    files: Iterable[str],
+    category: str,
+    existing_components: set[str],
+) -> dict:
+    """跑一批 amis 主包 renderer 文件，输出 references/*.md。
+    existing_components 用于去重（plugin_parser 已生成过的 component 不覆盖，
+    因为 plugin 侧的 reference 含 scaffold + events 信息更丰富）。
+    """
+    stats: dict[str, list[str]] = {"ok": [], "skip": [], "miss": [], "dup": []}
+    main_root = ZC_PACKAGES / "amis" / "src" / "renderers"
+    for rel in files:
+        src = main_root / rel
+        if not src.exists():
+            stats["miss"].append(rel)
+            continue
+        results = parser.parse_file(src)
+        if not results:
+            stats["skip"].append(rel)
+            continue
+        for parsed in results:
+            component = parsed["component"]
+            if component in existing_components:
+                stats["dup"].append(f"{component}  ←  {rel}")
+                continue
+            md = iface_to_markdown(parsed, category=category)
+            out = OUT_DIR / f"{component}.md"
+            out.write_text(md, encoding="utf-8")
+            stats["ok"].append(f"{component}  ←  {rel} (props={len(parsed['props'])})")
+            existing_components.add(component)
+    return stats
+
+
+def _run_main_renderer_globs(
+    parser: ZcInterfaceParser,
+    globs: Iterable[str],
+    category: str,
+    existing_components: set[str],
+) -> dict:
+    """用 glob 递归一批子目录，抽所有含 schema interface 的 .tsx。"""
+    stats: dict[str, list[str]] = {"ok": [], "skip": []}
+    main_root = ZC_PACKAGES / "amis" / "src" / "renderers"
+    for g in globs:
+        for src in main_root.glob(g):
+            if not src.is_file():
+                continue
+            results = parser.parse_file(src)
+            if not results:
+                continue
+            for parsed in results:
+                component = parsed["component"]
+                if component in existing_components:
+                    continue
+                md = iface_to_markdown(parsed, category=category)
+                out = OUT_DIR / f"{component}.md"
+                out.write_text(md, encoding="utf-8")
+                stats["ok"].append(f"{component}  ←  {src.relative_to(main_root)} (props={len(parsed['props'])})")
+                existing_components.add(component)
+    return stats
+
+
 def write_report_forms_reference() -> None:
     """手写 ReportForms 整体套件描述，不展开 125 个文件。"""
     out = OUT_DIR / "report-forms.md"
@@ -192,14 +319,60 @@ def main() -> None:
         print(f"    ⚠ skip (no rendererName): {rel}")
     print()
 
-    print("[3/3] 手写 ReportForms 套件描述...")
+    print("[3/5] 手写 ReportForms 套件描述...")
     write_report_forms_reference()
     print("  ✓ report-forms.md")
     print()
 
-    total = len(new_stats["ok"]) + len(patched_stats["ok"]) + 1
-    print(f"=== 完成：{total} 个 references 落到 {OUT_DIR}/ ===")
-    print(f"目录文件数: {len(list(OUT_DIR.glob('*.md')))}")
+    # 已生成的 component 集合（去重 main renderer 时用，plugin 侧已有的不覆盖）
+    existing: set[str] = {p.stem for p in OUT_DIR.glob("*.md")}
+
+    iparser = ZcInterfaceParser()
+    print("[4/5] 跑 P0 全新 amis 主包 renderers (NEW_MAIN_RENDERERS + globs)...")
+    new_main_stats = _run_main_renderer_files(
+        iparser, NEW_MAIN_RENDERERS, category="new", existing_components=existing
+    )
+    print(
+        f"  ok={len(new_main_stats['ok'])} skip={len(new_main_stats['skip'])} "
+        f"miss={len(new_main_stats['miss'])} dup={len(new_main_stats['dup'])}"
+    )
+    for line in new_main_stats["ok"]:
+        print(f"    ✓ {line}")
+    for line in new_main_stats["dup"]:
+        print(f"    ↻ dup (plugin 已生成): {line}")
+    for rel in new_main_stats["skip"]:
+        print(f"    ⚠ skip (no schema interface): {rel}")
+    for rel in new_main_stats["miss"]:
+        print(f"    ✗ missing file: {rel}")
+
+    glob_stats = _run_main_renderer_globs(
+        iparser, NEW_MAIN_RENDERER_GLOBS, category="new", existing_components=existing
+    )
+    print(f"  glob 子目录抽到 {len(glob_stats['ok'])} 个额外组件")
+    for line in glob_stats["ok"]:
+        print(f"    ✓ {line}")
+    print()
+
+    print("[5/5] 跑 P0 改造 amis 主包 renderers (PATCHED_MAIN_RENDERERS)...")
+    patched_main_stats = _run_main_renderer_files(
+        iparser, PATCHED_MAIN_RENDERERS, category="patched", existing_components=existing
+    )
+    print(
+        f"  ok={len(patched_main_stats['ok'])} skip={len(patched_main_stats['skip'])} "
+        f"miss={len(patched_main_stats['miss'])} dup={len(patched_main_stats['dup'])}"
+    )
+    for line in patched_main_stats["ok"]:
+        print(f"    ✓ {line}")
+    for line in patched_main_stats["dup"]:
+        print(f"    ↻ dup (plugin 已生成): {line}")
+    for rel in patched_main_stats["skip"]:
+        print(f"    ⚠ skip (no schema interface): {rel}")
+    for rel in patched_main_stats["miss"]:
+        print(f"    ✗ missing file: {rel}")
+    print()
+
+    total = len(list(OUT_DIR.glob("*.md")))
+    print(f"=== 完成：references/ 目录共 {total} 个 .md 文件 ===")
 
 
 if __name__ == "__main__":
