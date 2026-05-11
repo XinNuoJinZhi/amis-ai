@@ -36,6 +36,7 @@ pub struct LlmDecision {
 /// 1.4 A.2：可选传 `category` + `category_confidence`，让 auto 模式按业务类别覆盖 score 决策
 /// （例如 oa_form → strong，static_page → fast）。category=None 或 confidence<0.5 时保持原逻辑。
 /// 1.4 A.3：可选传 `force_tier`，over_budget 降级时强制锁定档位（如 Some("fast")）。
+/// 1.5 W3：可选传 `ab_variant`，B 组用 `_json_b` 覆盖表（None / "a" → 默认 `_json`）。
 pub async fn select_for_task(
     state: &AppState,
     user_id: i32,
@@ -46,12 +47,13 @@ pub async fn select_for_task(
     category: Option<&str>,
     category_confidence: Option<f32>,
     force_tier: Option<&str>,
+    ab_variant: Option<&str>,
 ) -> Result<LlmDecision, String> {
     let mode = payload_mode.unwrap_or("default");
     match mode {
         "manual" => select_manual(state, manual_provider_id, manual_model).await,
         "auto" => {
-            decide_auto(state, user_id, amis_json, category, category_confidence, force_tier).await
+            decide_auto(state, user_id, amis_json, category, category_confidence, force_tier, ab_variant).await
         }
         _ => select_default(state).await,
     }
@@ -65,7 +67,8 @@ pub async fn preview_auto(
     category: Option<&str>,
     category_confidence: Option<f32>,
 ) -> Result<LlmDecision, String> {
-    decide_auto(state, user_id, amis_json, category, category_confidence, None).await
+    // 预览不参与 A/B（A/B 仅影响真实任务），传 None 让 decide_auto 走 A 组默认
+    decide_auto(state, user_id, amis_json, category, category_confidence, None, None).await
 }
 
 // ============================================================
@@ -212,22 +215,25 @@ async fn decide_auto(
     category: Option<&str>,
     category_confidence: Option<f32>,
     force_tier: Option<&str>,
+    ab_variant: Option<&str>,
 ) -> Result<LlmDecision, String> {
     let score = score_amis_complexity(amis_json);
     let mut target_tier = tier_from_score(score);
 
-    // 1.4 A.2：category override
-    // 读 system_settings.llm.routing.category_tier_overrides_json，按 category 命中覆盖 tier
+    // 1.4 A.2 / 1.5 W3：category override
+    // 读 system_settings.llm.routing.category_tier_overrides_json[_b]，按 category 命中覆盖 tier
     // 置信度 < 0.5 时不参与（信号不足）；命中 __other__ / 未配置时保持原 score 决策
+    // 1.5 W3：ab_variant="b" 时读 _json_b（admin 可配置成与 A 组不同），让 routing 决策按 variant 分桶
+    let setting_key = if ab_variant == Some("b") {
+        "llm.routing.category_tier_overrides_json_b"
+    } else {
+        "llm.routing.category_tier_overrides_json"
+    };
     let mut override_applied: Option<(String, String)> = None; // (category, override_tier)
     if let (Some(cat), Some(conf)) = (category, category_confidence) {
         if conf >= 0.5 && cat != "__other__" {
-            let raw = crate::handlers::system_settings::read_value_or(
-                state,
-                "llm.routing.category_tier_overrides_json",
-                "{}",
-            )
-            .await;
+            let raw =
+                crate::handlers::system_settings::read_value_or(state, setting_key, "{}").await;
             if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&raw) {
                 if let Some(override_tier) = map.get(cat) {
                     if !override_tier.is_empty() && override_tier != &target_tier {

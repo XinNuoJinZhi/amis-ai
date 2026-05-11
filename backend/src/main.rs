@@ -296,9 +296,16 @@ async fn main() {
          ('llm.routing.category_tier_overrides_json',
                                               '{\"static_page\":\"fast\",\"data_table\":\"balanced\",\"multipage_dashboard\":\"strong\",\"oa_form\":\"strong\",\"ecommerce\":\"strong\",\"admin_settings\":\"balanced\",\"zc_business\":\"strong\"}',
                                                               '1.4 A.2：业务类别 → tier 覆盖表（auto 模式按 category 覆盖 score 决策；__other__ 不配则保持原 score 路径）', NOW()),
+         ('llm.routing.category_tier_overrides_json_b',
+                                              '{}',
+                                                              '1.5 W3 B：A/B 测试的 B 组覆盖表（默认空，admin 配置后才与 A 不同；ab_test_enabled=true 时按 user_id 分桶）', NOW()),
+         ('llm.routing.ab_test_enabled',     'false',         '1.5 W3 B：A/B 测试总闸；true 时按 user_id 稳定分桶，50/50 切 _json / _json_b', NOW()),
          ('llm.quota.enabled',               'false',         '1.4 A.3：总闸 — true 启用用户 token 配额（默认关闭，admin 评估后开启）', NOW()),
          ('llm.quota.default_daily_budget',  '100000',        '1.4 A.3：用户首次访问时的默认日 token 预算（user_token_quota 行未存在时初始化用）', NOW()),
          ('llm.quota.over_budget_action',    'downgrade',     '1.4 A.3：超额行为 downgrade（强制 fast 档跑）/ reject（直接 429）', NOW()),
+         ('llm.quota.estimate_calibration_factor', '200',     '1.5 W2：粗估公式校准系数（1.4 实测 actual ≈ estimated × 200；新公式无历史 fallback 时用）', NOW()),
+         ('llm.quota.estimate_min_samples',  '10',            '1.5 W2：category 历史中位数最少样本数；< N 时回落到公式 × 系数', NOW()),
+         ('rag.dual_route.enabled',          'true',          '1.4 B.1 / 1.5 W4：双路召回总闸（向量 + amis JSON 关键字）；false 时强制纯向量（用于 D 项 A 组对照评测）', NOW()),
          ('rag.negative.enabled',            'false',         '总闸：RAG 召回是否额外注入负例', NOW()),
          ('rag.negative.top_k',              '1',             '最多注入几条负例', NOW()),
          ('rag.negative.only_structural',    'true',          '仅注入 negative_kind=structural 的（避 LLM negation blindness）', NOW()),
@@ -401,16 +408,28 @@ async fn main() {
     ).await;
 
     // 任务级 LLM 选择 + 供应商能力分档的增量 migration
+    //   1.5 W3 B：ab_variant VARCHAR(16) NULL，记录任务所属 A/B 分桶
+    //   1.5 W1.2：accumulated_cost_tokens INT NULL，记录所有 attempt 累计成本（审计用）
+    //     - actual_cost_tokens 语义变为"当前 attempt 成本"（fix retry 时 reset 0）
+    //     - accumulated_cost_tokens 语义为"全部 attempt 累计"（永不 reset，仅累加）
     let _ = db.execute_unprepared(
         "ALTER TABLE project_generation_task
             ADD COLUMN IF NOT EXISTS llm_mode VARCHAR(16) NOT NULL DEFAULT 'default',
             ADD COLUMN IF NOT EXISTS llm_provider_id INTEGER,
             ADD COLUMN IF NOT EXISTS llm_model_name TEXT,
-            ADD COLUMN IF NOT EXISTS complexity_score    REAL,
-            ADD COLUMN IF NOT EXISTS category            VARCHAR(32),
-            ADD COLUMN IF NOT EXISTS category_confidence REAL,
-            ADD COLUMN IF NOT EXISTS estimated_cost_tokens INT,
-            ADD COLUMN IF NOT EXISTS actual_cost_tokens    INT"
+            ADD COLUMN IF NOT EXISTS complexity_score        REAL,
+            ADD COLUMN IF NOT EXISTS category                VARCHAR(32),
+            ADD COLUMN IF NOT EXISTS category_confidence     REAL,
+            ADD COLUMN IF NOT EXISTS estimated_cost_tokens   INT,
+            ADD COLUMN IF NOT EXISTS actual_cost_tokens      INT,
+            ADD COLUMN IF NOT EXISTS accumulated_cost_tokens INT,
+            ADD COLUMN IF NOT EXISTS ab_variant              VARCHAR(16)"
+    ).await;
+    // 1.5 W3：ab_variant 索引，加速 admin /ab-compare endpoint 按 variant 聚合
+    let _ = db.execute_unprepared(
+        "CREATE INDEX IF NOT EXISTS idx_pgt_ab_variant
+           ON project_generation_task (ab_variant, created_at DESC)
+           WHERE ab_variant IS NOT NULL"
     ).await;
     // 1.4 hotfix：早期 build 用了 FLOAT（=FLOAT8/double）但 entity 是 Option<f32>（FLOAT4/REAL），
     // sqlx decode 时类型不匹配导致并发 task 创建报 500。
@@ -641,6 +660,10 @@ async fn main() {
                 .put(handlers::system_settings::upsert_setting))
         // 嵌入维度兼容性探测（探活 + 列维度对比）
         .route("/api/system/embedding-info", get(handlers::system_settings::embedding_info))
+
+        // 1.5 W3 B：A/B 路由对比（仅 admin）
+        //   开启 llm.routing.ab_test_enabled 后，任务按 user_id 稳定分到 a/b 桶；此端点聚合对比两桶
+        .route("/api/admin/ab-compare", get(handlers::ab_compare::compare))
 
         // 2026-04 维度注册表（登录即可读，供 CreateTaskModal 渲染）
         .route("/api/registry/platforms", get(handlers::registry::list_platforms))

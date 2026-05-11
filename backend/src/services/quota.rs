@@ -13,7 +13,10 @@
 //!   - 总闸 `llm.quota.enabled=false` 时直接放行（不扣额，不写库）
 
 use chrono::{Duration, NaiveDateTime, Utc};
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel, QueryFilter, Set,
+    Statement,
+};
 
 use crate::entity::user_token_quota;
 use crate::handlers::system_settings::read_value_or;
@@ -34,7 +37,7 @@ pub struct QuotaDecision {
     pub reason: String,
 }
 
-/// 估算一个 task 的 token 成本（粗粒度，单位：token）。
+/// 1.4 A.3 原始粗估公式（保留供 fallback / 单元测试用）。
 ///
 /// 公式：
 ///   amis_json 长度 / 3      （prompt 输入，1 token ≈ 3 字符英文 / 1.5 字符中文，折中按 3）
@@ -42,7 +45,9 @@ pub struct QuotaDecision {
 ///   + complexity_score * 50  （complexity 越高 → 生成代码越长 → output token 越多）
 ///   + 500 基线              （system prompt + skills + RAG 注入）
 ///
-/// 评估仅用于 quota 预扣，不要求精准（W4 接入实际 actual_cost_tokens 时校准）。
+/// 1.4 W4 实测发现此公式低估约 200×（task 260: estimated=1785 vs actual=409,828），
+/// 因为没算上 Agent 多轮 LLM 调用（每轮都 echo 整个 system prompt + 历史）。
+/// 1.5 W2 引入 `estimate_task_cost_calibrated` async 版本，结合实际历史中位数 + 校准系数。
 pub fn estimate_task_cost(
     amis_json: &str,
     extra_prompt: Option<&str>,
@@ -54,6 +59,93 @@ pub fn estimate_task_cost(
         .unwrap_or(0);
     let complexity_tokens = complexity_score.unwrap_or(20.0) * 50.0;
     (amis_tokens + extra_tokens + complexity_tokens as i32 + 500).max(500)
+}
+
+/// 1.5 W2：校准后的成本估算（async，支持读历史 + settings 系数）。
+///
+/// 决策树：
+/// 1. 若 category != Some(__other__) 且最近 30 天该 category 成功任务 ≥ `min_samples`（默认 10）
+///    → 用 `accumulated_cost_tokens` 中位数 × `complexity_score / 20` 缩放（complexity 已归一为 20 = avg）
+/// 2. 否则回落到粗估公式 × `calibration_factor`（默认 200，根据 1.4 W4 实测）
+///
+/// settings keys：
+///   - `llm.quota.estimate_calibration_factor` 默认 "200"
+///   - `llm.quota.estimate_min_samples`        默认 "10"
+///
+/// 返回值保证 ≥ 500 token，避免 quota 检查 underflow。
+pub async fn estimate_task_cost_calibrated(
+    state: &AppState,
+    amis_json: &str,
+    extra_prompt: Option<&str>,
+    complexity_score: Option<f32>,
+    category: Option<&str>,
+) -> i32 {
+    let raw = estimate_task_cost(amis_json, extra_prompt, complexity_score);
+
+    // 读校准参数
+    let factor: f32 = read_value_or(state, "llm.quota.estimate_calibration_factor", "200")
+        .await
+        .trim()
+        .parse()
+        .unwrap_or(200.0);
+    let min_samples: i64 = read_value_or(state, "llm.quota.estimate_min_samples", "10")
+        .await
+        .trim()
+        .parse()
+        .unwrap_or(10);
+
+    // category 历史中位数路径
+    if let Some(cat) = category {
+        if cat != "__other__" {
+            if let Some(median) =
+                fetch_category_median_cost(state, cat, min_samples).await
+            {
+                // 用 complexity 缩放（complexity = 20 是均值；高 complexity 任务用更多 token）
+                let scale = (complexity_score.unwrap_or(20.0) / 20.0).clamp(0.5, 2.5);
+                let scaled = (median as f32 * scale) as i32;
+                return scaled.max(500);
+            }
+        }
+    }
+
+    // fallback：粗估 × 校准系数
+    ((raw as f32) * factor) as i32
+}
+
+/// 查最近 30 天指定 category 的成功任务 `accumulated_cost_tokens` 中位数。
+/// 样本数 < `min_samples` 时返回 None，让 caller fallback 到公式。
+async fn fetch_category_median_cost(
+    state: &AppState,
+    category: &str,
+    min_samples: i64,
+) -> Option<i64> {
+    // PostgreSQL percentile_cont 50% 等价中位数；忽略 NULL / 0 样本
+    let sql = format!(
+        "SELECT
+           COUNT(*)::BIGINT                                                         AS n,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY accumulated_cost_tokens)::BIGINT AS median
+         FROM project_generation_task
+         WHERE category = $1
+           AND status = 'succeeded'
+           AND accumulated_cost_tokens IS NOT NULL
+           AND accumulated_cost_tokens > 0
+           AND created_at >= NOW() - INTERVAL '30 days'"
+    );
+    let row = state
+        .db
+        .query_one(Statement::from_sql_and_values(
+            state.db.get_database_backend(),
+            &sql,
+            [category.into()],
+        ))
+        .await
+        .ok()
+        .flatten()?;
+    let n: i64 = row.try_get("", "n").unwrap_or(0);
+    if n < min_samples {
+        return None;
+    }
+    row.try_get::<i64>("", "median").ok()
 }
 
 /// 检查并预扣用户 quota；返回 QuotaDecision 让 caller 决定后续动作。

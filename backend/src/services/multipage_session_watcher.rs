@@ -147,7 +147,9 @@ async fn persist_event(db: &sea_orm::DatabaseConnection, task_id: i32, json_text
         );
     }
 
-    // 1.4 W4 actual_cost：llm_call_snapshot 收到时累加 usage 到 task.actual_cost_tokens
+    // 1.4 W4 actual_cost / 1.5 W1.2：llm_call_snapshot 收到时累加 usage
+    //   - actual_cost_tokens：当前 attempt 成本（fix retry 时由 spawn_dev_status_watcher reset 0）
+    //   - accumulated_cost_tokens：全部 attempt 累计（永不 reset，审计用）
     // response_events[*].type=="usage" 含 input_tokens / output_tokens（由 openai_stream/api_bridge 注入）
     if event_type == "llm_call_snapshot" {
         if let Some(v) = parsed {
@@ -162,10 +164,14 @@ async fn persist_event(db: &sea_orm::DatabaseConnection, task_id: i32, json_text
                     }
                 }
                 if total > 0 {
-                    // 原子累加：COALESCE 处理 NULL 初始值
+                    // 原子累加：同时写两列，单语句保事务一致性
                     let sql = format!(
-                        "UPDATE project_generation_task SET actual_cost_tokens = COALESCE(actual_cost_tokens, 0) + {} WHERE id = {}",
-                        total, task_id
+                        "UPDATE project_generation_task SET \
+                            actual_cost_tokens      = COALESCE(actual_cost_tokens, 0) + {tokens}, \
+                            accumulated_cost_tokens = COALESCE(accumulated_cost_tokens, 0) + {tokens} \
+                         WHERE id = {id}",
+                        tokens = total,
+                        id = task_id
                     );
                     use sea_orm::{ConnectionTrait, Statement};
                     if let Err(e) = db
