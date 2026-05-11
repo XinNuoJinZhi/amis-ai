@@ -89,12 +89,18 @@ def http_post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def create_task(token: str, prompt: dict[str, Any], execution_strategy: str, reuse_strategy: str | None) -> int:
+def create_task(
+    token: str,
+    prompt: dict[str, Any],
+    execution_strategy: str,
+    reuse_strategy: str | None,
+    tech_stack: str = DEFAULT_TECH_STACK,
+) -> int:
     """调 backend 创建多页任务，返回 task_id"""
     body = {
         "title": f"eval {prompt['id']} / {execution_strategy}/{reuse_strategy or 'none'}",
         "amis_json": "{}",
-        "tech_stack": DEFAULT_TECH_STACK,
+        "tech_stack": tech_stack,
         "execution_strategy": execution_strategy,
         "pages": prompt["pages"],
     }
@@ -187,11 +193,17 @@ def collect_metrics(task_id: int) -> dict[str, Any]:
     }
 
 
-def run_one(token: str, prompt: dict[str, Any], strategy: tuple[str, str, str | None], max_wait_sec: int) -> dict[str, Any]:
+def run_one(
+    token: str,
+    prompt: dict[str, Any],
+    strategy: tuple[str, str, str | None],
+    max_wait_sec: int,
+    tech_stack: str = DEFAULT_TECH_STACK,
+) -> dict[str, Any]:
     sid, exec_s, reuse_s = strategy
     log(f"  ▶ 启动 {sid}（exec={exec_s}, reuse={reuse_s or '-'}）")
     started_at = time.time()
-    task_id = create_task(token, prompt, exec_s, reuse_s)
+    task_id = create_task(token, prompt, exec_s, reuse_s, tech_stack=tech_stack)
     log(f"     task_id={task_id}，等终态…")
     final = wait_terminal(task_id, max_wait_sec)
     elapsed = round(time.time() - started_at, 1)
@@ -306,6 +318,10 @@ def main() -> int:
     parser.add_argument("--prompts", help="逗号分隔的 prompt id 子集（默认全部）")
     parser.add_argument("--strategies", help="逗号分隔的策略子集，如 r4_baseline,r1_skeleton（默认 5 个全跑）")
     parser.add_argument("--max-wait-sec", type=int, default=DEFAULT_MAX_WAIT_SEC, help=f"单任务最多等多久（默认 {DEFAULT_MAX_WAIT_SEC}s）")
+    parser.add_argument("--tech-stack", default=DEFAULT_TECH_STACK,
+                        help=f"目标技术栈（默认 {DEFAULT_TECH_STACK}；1.3 ZC Web 用 zc-editor-web）")
+    parser.add_argument("--prompts-file", default=str(PROMPTS_FILE),
+                        help=f"prompt 集 JSON 路径（默认 {PROMPTS_FILE}；1.3 用 eval/zc-web-1.3/prompts.json）")
     args = parser.parse_args()
 
     token = os.environ.get("TEST_ADMIN_JWT")
@@ -313,7 +329,8 @@ def main() -> int:
         log("❌ 需要 TEST_ADMIN_JWT 环境变量")
         return 1
 
-    raw = json.loads(PROMPTS_FILE.read_text(encoding="utf-8"))
+    prompts_file = Path(args.prompts_file).resolve()
+    raw = json.loads(prompts_file.read_text(encoding="utf-8"))
     all_prompts = raw["prompts"]
     if args.prompts:
         wanted = set(args.prompts.split(","))
@@ -330,9 +347,11 @@ def main() -> int:
         log("❌ 没有匹配的 strategy")
         return 1
 
+    # 输出落在 prompts-file 同目录（1.2 → eval/multipage-1.2/；1.3 → eval/zc-web-1.3/）
+    out_dir = prompts_file.parent
     started_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    csv_path = EVAL_DIR / f"results-{started_at}.csv"
-    md_path = EVAL_DIR / f"results-{started_at}.md"
+    csv_path = out_dir / f"results-{started_at}.csv"
+    md_path = out_dir / f"results-{started_at}.md"
 
     total = len(all_prompts) * len(strategies)
     log(f"评测开始：{len(all_prompts)} prompts × {len(strategies)} strategies = {total} tasks")
@@ -349,7 +368,7 @@ def main() -> int:
         log(f"=== [{i}/{len(all_prompts)}] prompt={prompt['id']}（{len(prompt['pages'])} 页）===")
         for strategy in strategies:
             try:
-                row = run_one(token, prompt, strategy, args.max_wait_sec)
+                row = run_one(token, prompt, strategy, args.max_wait_sec, tech_stack=args.tech_stack)
             except Exception as e:
                 log(f"     ✗ {strategy[0]} 跑挂：{e}")
                 row = {
