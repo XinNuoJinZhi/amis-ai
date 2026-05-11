@@ -1,0 +1,38 @@
+{
+  "_comment": "1.3.1 ZC 小程序 评测 prompt 集 — 复用 multipage-1.2 runner，--tech-stack zc-uniapp-mobile 触发",
+  "_indicators": "页通过率 / sandbox 启动率 / dev:h5 起得来吗 / LLM 调用次数 / 总耗时",
+  "_business_note": "底座是 shopro 电商套件，prompt 覆盖商品/订单/用户中心 三大主流程，scaffold pages/{goods,order,user} 已有现成业务页可参考增量",
+  "prompts": [
+    {
+      "id": "zc_mp_p1_goods_3pages",
+      "title": "ZC 小程序 商品流程三页（列表+详情+加购）",
+      "_note": "对齐 scaffold pages/goods/ 业务模式；输入 amis JSON 翻译成 uniapp + Wot",
+      "pages": [
+        {"amis_json": "{\"type\":\"crud\",\"title\":\"商品列表\",\"api\":\"app://goods/list\",\"columns\":[{\"name\":\"image\",\"label\":\"图\",\"type\":\"image\"},{\"name\":\"name\",\"label\":\"商品名\"},{\"name\":\"price\",\"label\":\"价格\",\"type\":\"tpl\",\"tpl\":\"¥${price}\"},{\"name\":\"sales\",\"label\":\"销量\"}],\"filter\":{\"type\":\"form\",\"controls\":[{\"name\":\"keyword\",\"label\":\"搜索\",\"type\":\"text\"},{\"name\":\"category\",\"label\":\"分类\",\"type\":\"select\",\"options\":[\"全部\",\"服饰\",\"数码\",\"食品\"]}]}}", "route_path": "/pages/goods/list"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"商品详情\",\"body\":[{\"type\":\"carousel\",\"options\":[\"${image}\"]},{\"type\":\"tpl\",\"tpl\":\"<h2>${name}</h2>\"},{\"type\":\"tpl\",\"tpl\":\"<span class='price'>¥${price}</span>\"},{\"type\":\"tpl\",\"tpl\":\"${description}\"},{\"type\":\"button\",\"label\":\"加入购物车\",\"actionType\":\"ajax\",\"api\":\"app://cart/add\"},{\"type\":\"button\",\"label\":\"立即购买\",\"actionType\":\"link\",\"link\":\"/pages/order/confirm\"}]}", "route_path": "/pages/goods/detail"},
+        {"amis_json": "{\"type\":\"crud\",\"title\":\"购物车\",\"api\":\"app://cart/list\",\"columns\":[{\"name\":\"image\",\"type\":\"image\"},{\"name\":\"name\",\"label\":\"商品\"},{\"name\":\"qty\",\"label\":\"数量\",\"type\":\"input-number\"},{\"name\":\"subtotal\",\"label\":\"小计\",\"type\":\"tpl\",\"tpl\":\"¥${subtotal}\"}],\"footerToolbar\":[{\"type\":\"tpl\",\"tpl\":\"合计：¥${total}\"},{\"type\":\"button\",\"label\":\"去结算\",\"actionType\":\"link\",\"link\":\"/pages/order/confirm\"}]}", "route_path": "/pages/cart/index"}
+      ]
+    },
+    {
+      "id": "zc_mp_p2_order_3pages",
+      "title": "ZC 小程序 订单流程三页（确认+支付+结果）",
+      "_note": "对齐 scaffold pages/order/ + pages/pay/ 业务",
+      "pages": [
+        {"amis_json": "{\"type\":\"form\",\"title\":\"确认订单\",\"api\":\"app://order/create\",\"controls\":[{\"name\":\"address\",\"label\":\"收货地址\",\"type\":\"picker\",\"source\":\"app://address/list\"},{\"name\":\"items\",\"label\":\"商品清单\",\"type\":\"static\",\"value\":\"${cart_items}\"},{\"name\":\"coupon\",\"label\":\"使用优惠券\",\"type\":\"select\",\"source\":\"app://coupon/available\"},{\"name\":\"remark\",\"label\":\"备注\",\"type\":\"textarea\"},{\"name\":\"payment\",\"label\":\"支付方式\",\"type\":\"radios\",\"options\":[\"微信支付\",\"余额支付\"]}]}", "route_path": "/pages/order/confirm"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"收银台\",\"body\":[{\"type\":\"tpl\",\"tpl\":\"<h1>¥${amount}</h1>\"},{\"type\":\"tpl\",\"tpl\":\"订单号：${orderNo}\"},{\"type\":\"button\",\"label\":\"立即支付\",\"actionType\":\"ajax\",\"api\":\"app://pay/wxpay\",\"size\":\"lg\"}]}", "route_path": "/pages/pay/index"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"支付结果\",\"body\":[{\"type\":\"tpl\",\"tpl\":\"<h2>✓ 支付成功</h2>\"},{\"type\":\"tpl\",\"tpl\":\"订单号：${orderNo}\"},{\"type\":\"tpl\",\"tpl\":\"金额：¥${amount}\"},{\"type\":\"button\",\"label\":\"查看订单\",\"actionType\":\"link\",\"link\":\"/pages/order/detail\"},{\"type\":\"button\",\"label\":\"继续购物\",\"actionType\":\"link\",\"link\":\"/pages/index/index\"}]}", "route_path": "/pages/pay/result"}
+      ]
+    },
+    {
+      "id": "zc_mp_p3_user_4pages",
+      "title": "ZC 小程序 用户中心四页（中心+地址+优惠券+设置）",
+      "_note": "对齐 scaffold pages/user/ + pages/coupon/ 业务",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"个人中心\",\"body\":[{\"type\":\"tpl\",\"tpl\":\"<div class='avatar'><img src='${avatar}'/></div>\"},{\"type\":\"tpl\",\"tpl\":\"<h3>${nickname}</h3>\"},{\"type\":\"cards\",\"items\":[{\"label\":\"我的订单\",\"link\":\"/pages/order/list\"},{\"label\":\"我的优惠券\",\"link\":\"/pages/coupon/my\"},{\"label\":\"地址管理\",\"link\":\"/pages/user/address/list\"},{\"label\":\"系统设置\",\"link\":\"/pages/user/setting\"}]}]}", "route_path": "/pages/user/index"},
+        {"amis_json": "{\"type\":\"crud\",\"title\":\"地址管理\",\"api\":\"app://address/list\",\"columns\":[{\"name\":\"name\",\"label\":\"收件人\"},{\"name\":\"phone\",\"label\":\"电话\"},{\"name\":\"address\",\"label\":\"地址\"},{\"name\":\"isDefault\",\"label\":\"默认\",\"type\":\"status\"}],\"headerToolbar\":[{\"type\":\"button\",\"label\":\"新增地址\",\"actionType\":\"dialog\",\"dialog\":{\"type\":\"form\",\"controls\":[{\"name\":\"name\",\"label\":\"收件人\",\"type\":\"text\",\"required\":true},{\"name\":\"phone\",\"label\":\"电话\",\"type\":\"tel\",\"required\":true},{\"name\":\"address\",\"label\":\"详细地址\",\"type\":\"textarea\",\"required\":true}]}}]}", "route_path": "/pages/user/address/list"},
+        {"amis_json": "{\"type\":\"crud\",\"title\":\"我的优惠券\",\"api\":\"app://coupon/my\",\"columns\":[{\"name\":\"name\",\"label\":\"券名\"},{\"name\":\"amount\",\"label\":\"面值\",\"type\":\"tpl\",\"tpl\":\"¥${amount}\"},{\"name\":\"condition\",\"label\":\"使用条件\"},{\"name\":\"expireAt\",\"label\":\"有效期\",\"type\":\"date\"},{\"name\":\"status\",\"label\":\"状态\"}],\"filter\":{\"type\":\"form\",\"controls\":[{\"name\":\"status\",\"label\":\"状态\",\"type\":\"select\",\"options\":[\"全部\",\"未使用\",\"已使用\",\"已过期\"]}]}}", "route_path": "/pages/coupon/my"},
+        {"amis_json": "{\"type\":\"form\",\"title\":\"系统设置\",\"api\":\"app://user/setting/save\",\"controls\":[{\"name\":\"pushEnable\",\"label\":\"推送通知\",\"type\":\"switch\"},{\"name\":\"theme\",\"label\":\"主题\",\"type\":\"radios\",\"options\":[\"浅色\",\"深色\",\"跟随系统\"]},{\"name\":\"language\",\"label\":\"语言\",\"type\":\"select\",\"options\":[\"中文\",\"English\"]}]}", "route_path": "/pages/user/setting"}
+      ]
+    }
+  ]
+}
