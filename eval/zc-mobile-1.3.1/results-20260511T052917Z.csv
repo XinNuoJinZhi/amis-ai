@@ -1,0 +1,2 @@
+prompt_id,prompt_title,page_count,strategy,execution_strategy,reuse_strategy,runner_wall_sec,task_id,task_status,pages_done,pages_total,pass_rate,reuse_rate,import_count,file_count,llm_calls,llm_total_ms,total_dur_sec,rag_ok
+zc_mp_p1_goods_3pages,ZC 小程序 商品流程三页（列表+详情+加购）,3,r4_baseline,isolated,r4_none,175.3,174,succeeded,2,3,0.667,0.0,0,3,58,166459,174,True

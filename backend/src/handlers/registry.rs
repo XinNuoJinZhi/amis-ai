@@ -141,6 +141,8 @@ fn builtin_platforms() -> Vec<PlatformEntry> {
                     ui_libs: vec![
                         UiLibEntry { id: "wot".into(), name: "Wot UI".into() },
                         UiLibEntry { id: "uview".into(), name: "uView UI".into() },
+                        // 1.3.1 引入：ZC 智搭小程序业务套件（shopro 电商模板 + ZC app:// 协议）
+                        UiLibEntry { id: "zc-amis".into(), name: "ZC 智搭（小程序）".into() },
                     ],
                 },
                 StackEntry {
