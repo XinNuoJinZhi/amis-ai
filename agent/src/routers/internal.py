@@ -320,6 +320,126 @@ async def judge_code_sample_endpoint(
     }
 
 
+# ─────────────────────── 1.4 W3·A.1：任务类别分类器 ───────────────────────
+
+
+class ClassifyTaskCategoryRequest(BaseModel):
+    """对一个 amis 任务做业务类别分类（不评难度，难度由现有 score_amis_complexity 算）。
+
+    用于 A.2 路由偏置：static_page → fast model，oa_form / ecommerce → strong model。"""
+    amis_json: str
+    extra_prompt: str | None = None  # 用户的业务描述（可选）
+    task_type: str = "chat"  # 用 fast 模型即可，分类不需要 strong
+
+
+_TASK_CATEGORY_PROMPT = """你是 amis 低代码任务的业务类别分类器。
+
+任务：根据 Amis JSON 结构 + 用户描述，判定属于以下 8 类之一：
+
+| category               | 典型特征 |
+|-----------------------|----------|
+| static_page           | 单页静态展示（图文 / 卡片 / 标签），无 form/crud |
+| data_table            | 主体是数据列表（crud / table），可能含简单筛选表单 |
+| multipage_dashboard   | 多页面 admin 后台（顶/左导航 + 多 page），含图表统计 |
+| oa_form               | 复杂业务表单（多步 / 嵌套 / 校验联动 / 部门-用户选择） |
+| ecommerce             | 电商场景（商品 / 订单 / 购物车 / 支付 / 优惠券） |
+| admin_settings        | 系统设置（配置项 / 权限管理 / 字典维护） |
+| zc_business           | ZC 智搭平台业务（含 modelform / user-select / department-select 等 ZC 二开组件） |
+| __other__             | 不属于以上任一类别 |
+
+输出严格 JSON（不加任何解释、不加 markdown fence）：
+{
+  "category": "<8 类之一>",
+  "confidence": 0.0-1.0
+}
+
+confidence 含义：
+  - ≥0.85 = 显著特征命中（如 type:modeltable 命 zc_business）
+  - 0.5-0.85 = 主特征命中但兼有他类元素
+  - <0.5 = 信号不足，标 __other__ 即可
+"""
+
+
+@router.post("/internal/classify-task-category")
+async def classify_task_category_endpoint(
+    request: ClassifyTaskCategoryRequest,
+    x_internal_key: str = Header(default=""),
+):
+    """1.4 A.1 · 给一个 amis 任务打业务类别标签。
+
+    backend 在 create_task 时调用，把 category 存到 project_generation_task 表，
+    后续 llm_selector 按 (category, difficulty) 矩阵决定 model 偏置（A.2）。
+    """
+    _check_internal_auth(x_internal_key)
+
+    # amis_json 截 6000 字（多页项目摘要够；分类不需要看完整结构细节）
+    user_msg = (
+        f"用户业务描述：{request.extra_prompt or '（空）'}\n\n"
+        f"Amis JSON（截断 6000 字）：\n{request.amis_json[:6000]}"
+    )
+    messages = [
+        {"role": "system", "content": _TASK_CATEGORY_PROMPT},
+        {"role": "user", "content": user_msg},
+    ]
+    try:
+        result = await chat_completion(request.task_type, messages, stream=False)
+    except Exception as e:
+        return {"ok": False, "error": f"LLM 调用失败：{e}"}
+
+    content = (
+        result.get("choices", [{}])[0]
+        .get("message", {})
+        .get("content", "")
+        .strip()
+    )
+    model_used = result.get("model") or result.get("model_used") or request.task_type
+
+    # 复用 fence 剥离 + 兜底找 {} 的 JSON 容错 parse
+    raw = content
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
+
+    try:
+        parsed = _json.loads(raw)
+    except Exception:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if 0 <= start < end:
+            try:
+                parsed = _json.loads(raw[start : end + 1])
+            except Exception as e:
+                return {"ok": False, "error": f"JSON 解析失败：{e}", "raw": content[:400]}
+        else:
+            return {"ok": False, "error": "无 JSON 结构", "raw": content[:400]}
+
+    _VALID_CATEGORIES = {
+        "static_page", "data_table", "multipage_dashboard", "oa_form",
+        "ecommerce", "admin_settings", "zc_business", "__other__",
+    }
+    category = str(parsed.get("category", "")).strip().lower()
+    if category not in _VALID_CATEGORIES:
+        # 容错：未知 category 一律归到 __other__，不让 LLM 输出抖动阻断主流程
+        category = "__other__"
+
+    try:
+        confidence = float(parsed.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = max(0.0, min(1.0, confidence))
+
+    return {
+        "ok": True,
+        "category": category,
+        "confidence": confidence,
+        "model_used": model_used,
+    }
+
+
 # ─────────────────────── 1.4 B.3b：page 级 amis schema 评委 ───────────────────────
 
 

@@ -576,6 +576,8 @@ async fn run_isolated_pages_with_shared_context(
         Some(&task.llm_mode),
         task.llm_provider_id,
         task.llm_model_name.as_deref(),
+        task.category.as_deref(),         // 1.4 A.2：复用 task 已分类的 category
+        task.category_confidence,
     )
     .await
     .map_err(|e| SchedulerError::ClawAgent(format!("llm_selector 失败: {e}")))?;
@@ -789,6 +791,8 @@ async fn build_stage_request(
         Some(&task.llm_mode),
         task.llm_provider_id,
         task.llm_model_name.as_deref(),
+        task.category.as_deref(),         // 1.4 A.2
+        task.category_confidence,
     )
     .await
     .map_err(|e| SchedulerError::ClawAgent(format!("llm_selector 失败: {e}")))?;

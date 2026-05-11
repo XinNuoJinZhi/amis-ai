@@ -293,6 +293,9 @@ async fn main() {
          ('rag.judge.batch_concurrency',     '3',             '批量评分并发', NOW()),
          ('rag.judge.auto_negative_on_bad',  'false',         '1.4 B.3a：评委 verdict=bad 时自动 mark is_negative（默认关闭，admin 评估后开启）', NOW()),
          ('rag.judge.page_mode',             'disabled',      '1.4 B.3b：page 级评委模式 disabled / manual / auto_on_complete', NOW()),
+         ('llm.routing.category_tier_overrides_json',
+                                              '{\"static_page\":\"fast\",\"data_table\":\"balanced\",\"multipage_dashboard\":\"strong\",\"oa_form\":\"strong\",\"ecommerce\":\"strong\",\"admin_settings\":\"balanced\",\"zc_business\":\"strong\"}',
+                                                              '1.4 A.2：业务类别 → tier 覆盖表（auto 模式按 category 覆盖 score 决策；__other__ 不配则保持原 score 路径）', NOW()),
          ('rag.negative.enabled',            'false',         '总闸：RAG 召回是否额外注入负例', NOW()),
          ('rag.negative.top_k',              '1',             '最多注入几条负例', NOW()),
          ('rag.negative.only_structural',    'true',          '仅注入 negative_kind=structural 的（避 LLM negation blindness）', NOW()),
@@ -399,7 +402,10 @@ async fn main() {
         "ALTER TABLE project_generation_task
             ADD COLUMN IF NOT EXISTS llm_mode VARCHAR(16) NOT NULL DEFAULT 'default',
             ADD COLUMN IF NOT EXISTS llm_provider_id INTEGER,
-            ADD COLUMN IF NOT EXISTS llm_model_name TEXT"
+            ADD COLUMN IF NOT EXISTS llm_model_name TEXT,
+            ADD COLUMN IF NOT EXISTS complexity_score   FLOAT,
+            ADD COLUMN IF NOT EXISTS category           VARCHAR(32),
+            ADD COLUMN IF NOT EXISTS category_confidence FLOAT"
     ).await;
     // 2026-04（性能优化）：为 auto 模式的 30 天历史成功率聚合 SQL + 常规 list_tasks 查询补复合索引
     //   - idx_pgt_user_created_provider：加速 llm_selector::fetch_history_success_rates 的

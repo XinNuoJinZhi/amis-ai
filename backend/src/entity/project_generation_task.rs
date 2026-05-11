@@ -57,6 +57,17 @@ pub struct Model {
     pub reuse_strategy: Option<String>,
     /// 本次任务总页数（单页任务默认 1）
     pub page_count: i32,
+
+    // 1.4 A.1：任务难度评估器持久化
+    /// 现有 score_amis_complexity 6 维度加权得分（之前仅 event 记录，1.4 起入表便于路由分析）
+    #[sea_orm(column_type = "Float", nullable)]
+    pub complexity_score: Option<f32>,
+    /// 1.4 A.1：LLM 分类器输出的业务类别（8 类之一），NULL = 未分类
+    #[sea_orm(column_type = "Text", nullable)]
+    pub category: Option<String>,
+    /// 1.4 A.1：分类器置信度 0-1（<0.5 不参与路由偏置）
+    #[sea_orm(column_type = "Float", nullable)]
+    pub category_confidence: Option<f32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

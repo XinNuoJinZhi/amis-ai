@@ -199,7 +199,41 @@ pub async fn create_task(
         }
     };
 
+    // -0.5. 1.4 A.1：调 Python 分类器拿 category + confidence（fire-and-wait，但调 chat 快）
+    //   失败/超时不阻断 → 走 None，select_for_task 退化为纯 score 决策
+    //   全局 max 3s timeout，避免拖累 create_task 首屏响应
+    let (task_category, task_category_confidence): (Option<String>, Option<f32>) = {
+        let agent_url =
+            std::env::var("AGENT_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
+        let internal_key = std::env::var("INTERNAL_API_KEY").unwrap_or_default();
+        let resp = state
+            .http_client
+            .post(format!("{}/internal/classify-task-category", agent_url))
+            .header("X-Internal-Key", &internal_key)
+            .json(&json!({
+                "amis_json": payload.amis_json,
+                "extra_prompt": payload.extra_prompt,
+            }))
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+            .await;
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                match r.json::<serde_json::Value>().await {
+                    Ok(v) if v.get("ok").and_then(|x| x.as_bool()) == Some(true) => {
+                        let cat = v.get("category").and_then(|x| x.as_str()).map(String::from);
+                        let conf = v.get("confidence").and_then(|x| x.as_f64()).map(|f| f as f32);
+                        (cat, conf)
+                    }
+                    _ => (None, None),
+                }
+            }
+            _ => (None, None),
+        }
+    };
+
     // 0. 先决策本次任务用哪个 LLM（manual / auto / default）
+    //    1.4 A.2：把 category + confidence 传入，auto 模式按 category 偏置覆盖 tier 决策
     let decision = match llm_selector::select_for_task(
         &state,
         user.id,
@@ -207,6 +241,8 @@ pub async fn create_task(
         payload.llm_mode.as_deref(),
         payload.llm_provider_id,
         payload.llm_model_name.as_deref(),
+        task_category.as_deref(),
+        task_category_confidence,
     )
     .await
     {
@@ -254,6 +290,10 @@ pub async fn create_task(
         execution_strategy: Set(payload.execution_strategy.clone()),
         reuse_strategy: Set(payload.reuse_strategy.clone()),
         page_count: Set(payload.pages.as_ref().map(|p| p.len() as i32).unwrap_or(1)),
+        // 1.4 A.1：分类器结果 + complexity_score 持久化（便于路由分析 / B.4 评测分桶）
+        complexity_score: Set(decision.complexity_score),
+        category: Set(task_category.clone()),
+        category_confidence: Set(task_category_confidence),
         ..Default::default()
     };
 
@@ -1347,7 +1387,9 @@ pub async fn llm_preview(
         Err(e) => return e.into_response(),
     };
 
-    match llm_selector::preview_auto(&state, user.id, &payload.amis_json).await {
+    // 1.4 A.2：preview_auto 也支持 category override，但 preview 阶段还未跑分类器，
+    // 这里传 None — 前端预览看到的是基线 score 决策；正式 create_task 时会带 category。
+    match llm_selector::preview_auto(&state, user.id, &payload.amis_json, None, None).await {
         Ok(d) => preview_to_json(&d).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
