@@ -1,31 +1,31 @@
-[21:49:53] 评测开始：5 prompts × 1 strategies = 5 tasks
-[21:49:53]   prompts: ['zc_p1_user_directory_3pages', 'zc_p2_dashboard_4pages', 'zc_p4_oa_workflow_3pages', 'zc_p5_oa_dept_3pages', 'zc_p3_workorder_3pages']
-[21:49:53]   strategies: ['r4_baseline']
-[21:49:53]   max_wait_sec/task: 1500
-[21:49:53]   CSV → eval/zc-web-1.3/results-20260511T134953Z.csv
-[21:49:53]   MD  → eval/zc-web-1.3/results-20260511T134953Z.md
-[21:49:53] 
-[21:49:53] === [1/5] prompt=zc_p1_user_directory_3pages（3 页）===
-[21:49:53]   ▶ 启动 r4_baseline（exec=isolated, reuse=r4_none）
-[21:49:57]      task_id=214，等终态…
-[21:50:27]      ← r4_baseline 完成 status=succeeded pass=3/3 reuse=0.00 llm=25calls/41s runner_wall=33.3s
-[21:50:27] === [2/5] prompt=zc_p2_dashboard_4pages（4 页）===
-[21:50:27]   ▶ 启动 r4_baseline（exec=isolated, reuse=r4_none）
-[21:50:29]      task_id=215，等终态…
-[21:51:28]      ← r4_baseline 完成 status=succeeded pass=4/4 reuse=0.00 llm=65calls/96s runner_wall=60.3s
-[21:51:28] === [3/5] prompt=zc_p4_oa_workflow_3pages（3 页）===
-[21:51:28]   ▶ 启动 r4_baseline（exec=isolated, reuse=r4_none）
-[21:51:29]      task_id=216，等终态…
-[21:51:59]      ← r4_baseline 完成 status=succeeded pass=3/3 reuse=0.00 llm=27calls/67s runner_wall=30.8s
-[21:51:59] === [4/5] prompt=zc_p5_oa_dept_3pages（3 页）===
-[21:51:59]   ▶ 启动 r4_baseline（exec=isolated, reuse=r4_none）
-[21:51:59]      task_id=217，等终态…
-[21:52:29]      ← r4_baseline 完成 status=succeeded pass=3/3 reuse=0.00 llm=23calls/36s runner_wall=30.2s
-[21:52:29] === [5/5] prompt=zc_p3_workorder_3pages（3 页）===
-[21:52:29]   ▶ 启动 r4_baseline（exec=isolated, reuse=r4_none）
-[21:52:31]      task_id=218，等终态…
-[21:53:15]      ← r4_baseline 完成 status=succeeded pass=3/3 reuse=0.00 llm=46calls/64s runner_wall=46.0s
-[21:53:15] 
-[21:53:15] 评测完成 总耗时=3.4min
-[21:53:15]   CSV: eval/zc-web-1.3/results-20260511T134953Z.csv
-[21:53:15]   MD : eval/zc-web-1.3/results-20260511T134953Z.md
+[22:47:24] 评测开始：5 prompts × 1 strategies = 5 tasks
+[22:47:24]   prompts: ['zc_p1_user_directory_3pages', 'zc_p2_dashboard_4pages', 'zc_p4_oa_workflow_3pages', 'zc_p5_oa_dept_3pages', 'zc_p3_workorder_3pages']
+[22:47:24]   strategies: ['r4_baseline']
+[22:47:24]   max_wait_sec/task: 1500
+[22:47:24]   CSV → eval/zc-web-1.3/results-20260511T144724Z.csv
+[22:47:24]   MD  → eval/zc-web-1.3/results-20260511T144724Z.md
+[22:47:24] 
+[22:47:24] === [1/5] prompt=zc_p1_user_directory_3pages（3 页）===
+[22:47:24]   ▶ 启动 r4_baseline（exec=isolated, reuse=r4_none）
+[22:47:27]      task_id=240，等终态…
+[22:47:57]      ← r4_baseline 完成 status=succeeded pass=3/3 reuse=0.00 llm=26calls/41s runner_wall=32.8s
+[22:47:57] === [2/5] prompt=zc_p2_dashboard_4pages（4 页）===
+[22:47:57]   ▶ 启动 r4_baseline（exec=isolated, reuse=r4_none）
+[22:48:00]      task_id=241，等终态…
+[22:48:30]      ← r4_baseline 完成 status=succeeded pass=4/4 reuse=0.00 llm=31calls/49s runner_wall=32.4s
+[22:48:30] === [3/5] prompt=zc_p4_oa_workflow_3pages（3 页）===
+[22:48:30]   ▶ 启动 r4_baseline（exec=isolated, reuse=r4_none）
+[22:48:31]      task_id=242，等终态…
+[22:49:01]      ← r4_baseline 完成 status=succeeded pass=3/3 reuse=0.00 llm=26calls/40s runner_wall=30.5s
+[22:49:01] === [4/5] prompt=zc_p5_oa_dept_3pages（3 页）===
+[22:49:01]   ▶ 启动 r4_baseline（exec=isolated, reuse=r4_none）
+[22:49:04]      task_id=243，等终态…
+[23:02:56]      ← r4_baseline 完成 status=succeeded pass=3/3 reuse=0.00 llm=48calls/90s runner_wall=834.9s
+[23:02:56] === [5/5] prompt=zc_p3_workorder_3pages（3 页）===
+[23:02:56]   ▶ 启动 r4_baseline（exec=isolated, reuse=r4_none）
+[23:02:57]      task_id=248，等终态…
+[23:03:27]      ← r4_baseline 完成 status=succeeded pass=3/3 reuse=0.00 llm=33calls/45s runner_wall=30.8s
+[23:03:27] 
+[23:03:27] 评测完成 总耗时=16.0min
+[23:03:27]   CSV: eval/zc-web-1.3/results-20260511T144724Z.csv
+[23:03:27]   MD : eval/zc-web-1.3/results-20260511T144724Z.md

@@ -75,12 +75,13 @@ set_knob rag.weighting.hit_count_enabled true
 run_group B
 
 echo ""
-echo "════════ Group C: full stack（+ 负例 + 评委 + 自动回流）════════"
+echo "════════ Group C: full stack（+ 负例 + 评委 + page 评委 + 自动回流）════════"
 set_knob rag.negative.enabled true
 set_knob rag.negative.top_k 1
 set_knob rag.negative.only_structural true
 set_knob rag.judge.mode auto_on_adopt
 set_knob rag.judge.auto_negative_on_bad true
+set_knob rag.judge.page_mode auto_on_complete   # 1.4 W4 #2：B.3b page 级评委也启用
 run_group C
 
 echo ""
@@ -100,4 +101,5 @@ set_knob rag.weighting.hit_count_enabled false
 set_knob rag.negative.enabled false
 set_knob rag.judge.mode disabled
 set_knob rag.judge.auto_negative_on_bad false
+set_knob rag.judge.page_mode disabled
 echo "✅ 完成"

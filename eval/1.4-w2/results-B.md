@@ -1,10 +1,10 @@
-# 1.2.0 多页 5 策略评测报告（20260511T135315Z）
+# 1.2.0 多页 5 策略评测报告（20260511T150327Z）
 
 ## 策略汇总（按 strategy 聚合）
 
 | 策略 | 任务成功率 | 平均页通过率 | 平均复用率 | 平均 LLM 调用 | 平均 LLM 耗时 | 平均总耗时 |
 |---|---|---|---|---|---|---|
-| **r4_baseline** | 5/5（100%）| 100% | 0.00 | 28.8 次 | 50.1s | 22.0s |
+| **r4_baseline** | 5/5（100%）| 100% | 0.00 | 30.8 次 | 47.7s | 21.2s |
 
 **指标说明**：
 - 任务成功率：task 主表 status=succeeded 占比
@@ -19,28 +19,28 @@
 
 | 策略 | task_status | 页通过 | 复用率 | LLM 次数 | LLM 总耗时 | 总耗时 | rag_recorded |
 |---|---|---|---|---|---|---|---|
-| r4_baseline | succeeded | 3/3 | 0.00 | 23 | 27s | 11s | ✓ |
+| r4_baseline | succeeded | 3/3 | 0.00 | 30 | 36s | 16s | ✓ |
 
 ### zc_p2_dashboard_4pages — ZC 后台仪表盘四页（首页+报表+订单 CRUD+客户档案）（4 页）
 
 | 策略 | task_status | 页通过 | 复用率 | LLM 次数 | LLM 总耗时 | 总耗时 | rag_recorded |
 |---|---|---|---|---|---|---|---|
-| r4_baseline | succeeded | 4/4 | 0.00 | 47 | 67s | 27s | ✓ |
+| r4_baseline | succeeded | 4/4 | 0.00 | 41 | 56s | 25s | ✓ |
 
 ### zc_p3_workorder_3pages — ZC 工单 CRUD 三页（列表+详情+动态表单提交）（3 页）
 
 | 策略 | task_status | 页通过 | 复用率 | LLM 次数 | LLM 总耗时 | 总耗时 | rag_recorded |
 |---|---|---|---|---|---|---|---|
-| r4_baseline | succeeded | 3/3 | 0.00 | 26 | 66s | 25s | ✓ |
+| r4_baseline | succeeded | 3/3 | 0.00 | 28 | 47s | 21s | ✓ |
 
 ### zc_p4_oa_workflow_3pages — ZC OA 工作流三页（启动+流转+我的待办）（3 页）
 
 | 策略 | task_status | 页通过 | 复用率 | LLM 次数 | LLM 总耗时 | 总耗时 | rag_recorded |
 |---|---|---|---|---|---|---|---|
-| r4_baseline | succeeded | 3/3 | 0.00 | 25 | 51s | 29s | ✓ |
+| r4_baseline | succeeded | 3/3 | 0.00 | 29 | 55s | 27s | ✓ |
 
 ### zc_p5_oa_dept_3pages — ZC OA 组织架构三页（部门树+人员+角色权限）（3 页）
 
 | 策略 | task_status | 页通过 | 复用率 | LLM 次数 | LLM 总耗时 | 总耗时 | rag_recorded |
 |---|---|---|---|---|---|---|---|
-| r4_baseline | succeeded | 3/3 | 0.00 | 23 | 39s | 18s | ✓ |
+| r4_baseline | succeeded | 3/3 | 0.00 | 26 | 44s | 17s | ✓ |

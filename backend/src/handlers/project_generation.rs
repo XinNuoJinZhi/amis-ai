@@ -199,6 +199,26 @@ pub async fn create_task(
         }
     };
 
+    // -0.75. 1.4 W4 修：多页任务 runner 传 amis_json="{}"，真实结构在 pages[].amis_json。
+    //   合并所有 page 的 amis_json 成 {"type":"page","body":[...page1,page2...]} 供:
+    //     - 分类器（A.1 category）
+    //     - 复杂度评分（A.2 score → tier）
+    //     - 成本预估（A.3 estimate）
+    //   单页 / 无 pages：直接用 payload.amis_json
+    let amis_for_analysis: String = match payload.pages.as_ref() {
+        Some(pages) if !pages.is_empty() => {
+            let body: Vec<serde_json::Value> = pages
+                .iter()
+                .map(|p| {
+                    serde_json::from_str::<serde_json::Value>(&p.amis_json)
+                        .unwrap_or_else(|_| serde_json::json!({}))
+                })
+                .collect();
+            serde_json::json!({"type": "page", "body": body}).to_string()
+        }
+        _ => payload.amis_json.clone(),
+    };
+
     // -0.5. 1.4 A.1：调 Python 分类器拿 category + confidence（fire-and-wait，但调 chat 快）
     //   失败/超时不阻断 → 走 None，select_for_task 退化为纯 score 决策
     //   全局 max 3s timeout，避免拖累 create_task 首屏响应
@@ -211,7 +231,7 @@ pub async fn create_task(
             .post(format!("{}/internal/classify-task-category", agent_url))
             .header("X-Internal-Key", &internal_key)
             .json(&json!({
-                "amis_json": payload.amis_json,
+                "amis_json": amis_for_analysis,
                 "extra_prompt": payload.extra_prompt,
             }))
             .timeout(std::time::Duration::from_secs(3))
@@ -238,7 +258,7 @@ pub async fn create_task(
     //   - reject 模式超额 → 直接返回 429
     //   - downgrade 模式超额 → 设 force_tier="fast"，select_for_task 强制锁档
     let estimated_cost = crate::services::quota::estimate_task_cost(
-        &payload.amis_json,
+        &amis_for_analysis,
         payload.extra_prompt.as_deref(),
         None, // complexity_score 由 LLM 决策时算，这里粗估即可
     );
@@ -286,7 +306,7 @@ pub async fn create_task(
     let decision = match llm_selector::select_for_task(
         &state,
         user.id,
-        &payload.amis_json,
+        &amis_for_analysis,
         payload.llm_mode.as_deref(),
         payload.llm_provider_id,
         payload.llm_model_name.as_deref(),

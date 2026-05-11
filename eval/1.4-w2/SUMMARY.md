@@ -64,3 +64,48 @@
    - 多页 category 分类器（解 __other__ 问题）
    - 更刁钻的评测集（让 B.1 双路效果显现）
 3. **不必做**：B 轨升 RRF 严格双路（当前评测没看到 B.1 退化，且 B 组耗时降了，单路+bonus 已经够用）
+
+---
+
+## 🔄 v4 复测（W4 #1+#2 修复后）
+
+> **跑期**：2026-05-11 23:03-23:08（5 分钟）
+> 注：之前 v3 用的还是旧 binary（cargo check 不 build），22:46 cargo build 出新 binary 后才真生效
+
+### W4 #1 修复（分类器看 multipage 合并 amis_json）
+
+```
+v3 旧 binary：category 全部 __other__（runner 传 amis_json="{}"，分类器没信号）
+v4 新 binary：category 真实分布命中
+  zc_business: 7 task
+  oa_form:     6 task
+  multipage_dashboard: 4 task
+  data_table:  1 task
+  空:          1 task（个别分类器调用超时）
+
+estimated_cost_tokens：从固定 1500 变成 1767-2215 真实计算
+```
+
+### W4 #2 修复（C 组开 rag.judge.page_mode）
+
+```
+B.3b page 级评委首次真触发：41 个 page 被评
+  good:           4 page
+  needs_review:  31 page
+  bad:            6 page
+  空（A/B 组）：  20 page（page_mode disabled，符合预期）
+```
+
+### v4 三组对比（同 prompts × r4_baseline）
+
+| 指标 | A baseline | B +weighting | C 全开 + page 评委 |
+|---|---|---|---|
+| 任务成功率 | 5/5 (100%) | 5/5 (100%) | 5/5 (100%) |
+| 页通过率 | 100% | 100% | 100% |
+
+### 关键观察 v4
+
+- **A.2 路由偏置真正进入工作状态**：category 有 4 个真实类别，可以按 system_settings.llm.routing.category_tier_overrides_json 走 tier 偏置（zc_business → strong / oa_form → strong / dashboard → strong / data_table → balanced）
+- **B.3b 评委显示真实质量信号**：31/41 = 76% `needs_review` 说明评委有意见可表达（不是把所有页都标 good），是有效信号
+- **6 个 bad page** 没自动入库为 is_negative=true 的 code_sample：这是当前设计（B.3a auto_negative_on_bad 只对 sample 级，page 级没自动 mark）→ W5 可考虑加 page-bad → 单独入库 negative sample 链路
+
