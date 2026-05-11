@@ -221,7 +221,7 @@ async def _insert_negative(
                 platforms, tech_stacks, ui_libs, tags, keyword_index,
                 amis_json_summary, code_summary,
                 full_amis_json, full_code,
-                status, is_negative, negative_kind, rejection_reason,
+                status, hit_count, is_negative, negative_kind, rejection_reason,
                 embedding, source_task_id,
                 created_at, updated_at
             ) VALUES (
@@ -229,7 +229,7 @@ async def _insert_negative(
                 $3::text[], $4::text[], $5::text[], $6::text[], $7::text[],
                 $8, $9,
                 $10, $11,
-                'approved', TRUE, 'structural', $12,
+                'approved', 0, TRUE, 'structural', $12,
                 $13::vector, $14,
                 NOW(), NOW()
             )
