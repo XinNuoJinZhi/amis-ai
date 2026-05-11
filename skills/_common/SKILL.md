@@ -81,7 +81,7 @@ amis-ai 的反向飞轮**优先用确定性翻译器**（[agent/src/amis_transla
 
 ### 第 2 步：选好"该用哪个 stack 的 skill"
 - 默认按任务的 `tech_stack` 字段加载对应 skill（已自动加载，无需手动）
-- 如果任务声明了 ZC Amis 等扩展栈，**主动 `Skill({skill: "zc_amis"})` 拉它的 SKILL.md** 读懂二开规则
+- 当任务 `template_name=zc-editor-web-template`（ZC 智搭 Web）→ `platform-zc-web` 桶已被系统自动注入；遇到 ZC 二开组件名（`department-select` / `user-select` / `modelform` / `modeltable` / `report-forms` / `dynamic-form` / `flowCreate` 等）**先 `Skill({skill: "zc-amis-schema"})` 检索对应 `references/<component>.md`**，再写代码，避免与原版 Amis 同名组件混淆
 
 ### 第 3 步：按当前栈的 SKILL.md 工作流推进
 - 跟着栈 SKILL.md 里的"工作流程"一步步做（拷脚手架 → 翻译顶层 → 单组件映射 → API 适配 → 路由注册）
