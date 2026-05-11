@@ -65,11 +65,14 @@ export default function CreateMultipageTask() {
           />
         </Form.Item>
 
-        <Form.Item label="技术栈">
+        <Form.Item label="技术栈" help="1.3 起多页面任务支持 ZC 智搭 Web 底座（zc-editor-web → registry.yaml 的 zc-editor-web-template）">
           <Select
             value={techStack}
             onChange={setTechStack}
-            options={[{ value: 'uniapp-wot-h5', label: 'UniApp + Wot UI H5' }]}
+            options={[
+              { value: 'uniapp-wot-h5', label: 'UniApp + Wot UI H5（移动端，1.2 稳定）' },
+              { value: 'zc-editor-web', label: 'ZC 智搭 Web（zc-editor，1.3 引入）' },
+            ]}
           />
         </Form.Item>
 

@@ -110,6 +110,8 @@ fn builtin_platforms() -> Vec<PlatformEntry> {
                     ui_libs: vec![
                         UiLibEntry { id: "antd".into(), name: "Ant Design".into() },
                         UiLibEntry { id: "arco".into(), name: "Arco Design".into() },
+                        // 1.3 引入：ZC 智搭低代码平台 Amis 二开版（含 zc-editor 底座 + 121 个二开组件）
+                        UiLibEntry { id: "zc-amis".into(), name: "ZC 智搭 Amis".into() },
                     ],
                 },
                 StackEntry {
@@ -270,6 +272,7 @@ const SCAFFOLD_FROM_SCRATCH: &str = "scaffold-from-scratch";
 fn resolve_selected_buckets(
     all: &[SkillBucketSummary],
     payload: &ResolveSkillsPayload,
+    template_defaults: &[String],
     warnings: &mut Vec<String>,
 ) -> Vec<String> {
     use std::collections::HashSet;
@@ -293,6 +296,23 @@ fn resolve_selected_buckets(
         }
     } else {
         append_by_dimension(all, payload, &mut selected);
+    }
+
+    // 1.5 template.default_skill_buckets 兜底（1.3 引入）
+    // 像 platform-zc-web / zc-amis-schema 这种 knowledge 类桶不带 platform/stack/ui 维度，
+    // 维度 selector 命不中；如果当前 template 在 registry.yaml 配了 default_skill_buckets，
+    // 把它们一并激活。**explicit 路径优先级最高，不被本步覆盖**——已经走 explicit 的任务保持原样。
+    if payload.explicit_buckets.is_empty() {
+        for n in template_defaults {
+            if all.iter().any(|b| &b.dir_name == n) {
+                selected.insert(n.clone());
+            } else {
+                warnings.push(format!(
+                    "template 的 default_skill_buckets 提到 {} 但桶不存在，已忽略",
+                    n
+                ));
+            }
+        }
     }
 
     // 2. 无模板 → scaffold-from-scratch
@@ -430,7 +450,13 @@ pub async fn resolve_skills(
 ) -> impl IntoResponse {
     let buckets = scan_skill_buckets(Path::new(&state.skills_root));
     let mut warnings = Vec::new();
-    let selected = resolve_selected_buckets(&buckets, &payload, &mut warnings);
+    let template_defaults: Vec<String> = payload
+        .template_name
+        .as_deref()
+        .and_then(|n| state.template_registry.get(n))
+        .map(|t| t.default_skill_buckets.clone())
+        .unwrap_or_default();
+    let selected = resolve_selected_buckets(&buckets, &payload, &template_defaults, &mut warnings);
     // sections 数量 = L0(common) + 选中桶(不含 _common) + L2(索引，仅当有未选中桶时) + L3
     let selected_non_common = selected.iter().filter(|n| n.as_str() != COMMON_BUCKET).count();
     let others_exist = buckets

@@ -454,10 +454,15 @@ export default function CreateTaskModal({ open, onClose }: Props) {
               .filter((t) => t.platform === 'any' || t.platform === platform)
               .map((t) => ({
                 label: (
-                  <Space>
+                  <Space size={[4, 4]} wrap>
                     <span>{t.name}</span>
                     {!t.has_scaffold && <Tag color="orange">缺失目录</Tag>}
                     <Tag color="blue">{t.platform}</Tag>
+                    {t.ui_libs.map((u) => (
+                      <Tag key={u} color={u === 'zc-amis' ? 'magenta' : 'purple'}>
+                        {u}
+                      </Tag>
+                    ))}
                   </Space>
                 ),
                 value: t.name,

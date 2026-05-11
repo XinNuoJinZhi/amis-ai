@@ -1,0 +1,102 @@
+.anchor-nav {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+
+  // 垂直布局（默认）
+  &.anchor-nav-vertical {
+    flex-direction: row;
+
+    .anchor-nav-bar {
+      width: 200px;
+      flex-shrink: 0;
+      border-right: 1px solid #f0f0f0;
+      padding: 16px 0;
+      overflow-y: auto;
+
+      :global {
+        .ant-anchor {
+          padding-left: 16px;
+        }
+
+        .ant-anchor-link {
+          padding: 8px 16px 8px 0;
+        }
+
+        .ant-anchor-link-title {
+          font-size: 14px;
+          line-height: 1.5;
+          color: rgba(0, 0, 0, 0.65);
+          transition: all 0.3s;
+
+          &:hover {
+            color: #1890ff;
+          }
+        }
+
+        .ant-anchor-link-active > .ant-anchor-link-title {
+          color: #1890ff;
+          font-weight: 500;
+        }
+
+        .ant-anchor-ink {
+          &::before {
+            background-color: #f0f0f0;
+          }
+        }
+
+        .ant-anchor-ink-ball {
+          border-color: #1890ff;
+        }
+      }
+    }
+
+    .anchor-nav-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 24px;
+    }
+  }
+
+  // 水平布局
+  &.anchor-nav-horizontal {
+    flex-direction: column;
+
+    .anchor-nav-bar {
+      height: auto;
+      flex-shrink: 0;
+      border-bottom: 1px solid #f0f0f0;
+      padding: 16px 24px;
+      overflow-x: auto;
+      overflow-y: hidden;
+
+      :global {
+        .ant-anchor {
+          display: flex;
+          flex-direction: row;
+
+          .ant-anchor-link {
+            padding: 0 16px;
+            display: inline-block;
+          }
+        }
+      }
+    }
+
+    .anchor-nav-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+    }
+  }
+
+  .anchor-nav-section {
+    margin-bottom: 32px;
+    scroll-margin-top: 16px;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+}

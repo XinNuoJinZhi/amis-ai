@@ -31,6 +31,10 @@ pub struct TemplateSpec {
     /// 用户没显式选 skill 桶时的默认激活列表
     #[serde(default)]
     pub default_skill_buckets: Vec<String>,
+    /// sandbox 镜像 tag（1.3 引入）；None 表示沿用 sandbox-service 启动时默认镜像 `amis-ai-sandbox:uniapp-node20`。
+    /// 1.3.0 起 ZC Web 模板用 `amis-ai-sandbox:zc-web-node20`；后续多模板共存时由 sandbox-service 路由 docker run。
+    #[serde(default)]
+    pub image: Option<String>,
 }
 
 fn default_dev_log() -> String {
@@ -103,6 +107,7 @@ impl TemplateRegistry {
                 dev_log: default_dev_log(),
                 preview_port_hint: default_port_hint(),
                 default_skill_buckets: vec!["_common".into(), "uniapp-wot-h5".into()],
+                image: None,
             },
             TemplateSpec {
                 name: "__blank__".into(),
@@ -115,6 +120,7 @@ impl TemplateRegistry {
                 dev_log: default_dev_log(),
                 preview_port_hint: default_port_hint(),
                 default_skill_buckets: vec!["_common".into(), "scaffold-from-scratch".into()],
+                image: None,
             },
         ];
         Self { templates: fallback }

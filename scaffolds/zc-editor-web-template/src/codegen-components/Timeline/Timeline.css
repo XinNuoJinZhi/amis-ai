@@ -1,0 +1,94 @@
+/* 水平时间轴容器 */
+.timeline-horizontal-wrapper {
+  width: 100%;
+  padding: 20px 0;
+}
+
+.timeline-horizontal-container {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  position: relative;
+}
+
+/* 每个时间轴项 */
+.timeline-horizontal-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 120px;
+  max-width: 200px;
+}
+
+/* 圆点包装器 */
+.timeline-horizontal-dot-wrapper {
+  position: relative;
+  z-index: 2;
+  margin-bottom: 12px;
+}
+
+/* 默认圆点样式 */
+.timeline-horizontal-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 2px currentColor;
+}
+
+/* 自定义图标圆点 */
+.timeline-horizontal-dot-custom {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #1890ff;
+}
+
+.timeline-horizontal-dot-custom span {
+  font-size: 14px;
+  color: #1890ff;
+}
+
+/* 连接线 */
+.timeline-horizontal-line {
+  flex: 1 1 auto;
+  height: 2px;
+  background-color: #e8e8e8;
+  margin: 0 -1px;
+  align-self: flex-start;
+  margin-top: 17px; /* 对齐到圆点中心 */
+  min-width: 20px;
+}
+
+/* 内容区域 */
+.timeline-horizontal-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  width: 100%;
+  padding: 0 8px;
+}
+
+/* 时间标签 */
+.timeline-horizontal-label {
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 4px;
+  white-space: nowrap;
+}
+
+/* 标题/内容 */
+.timeline-horizontal-title {
+  font-size: 14px;
+  color: #333;
+  word-wrap: break-word;
+  word-break: break-word;
+  line-height: 1.5;
+}

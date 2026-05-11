@@ -1,0 +1,73 @@
+.root-preview-body {
+  width: 100%;
+  height: calc(100vh - 200px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+
+  .mobile-preview-body {
+    height: 100%;
+
+    &.is-mobile {
+      position: relative;
+      width: 375px;
+      max-height: 812px;
+      flex-grow: unset;
+      min-height: unset;
+      min-width: unset;
+      border-width: 10px;
+      border-color: rgb(34, 34, 34);
+      border-style: solid;
+      border-radius: 30px;
+      padding: 0px;
+      overflow: visible;
+
+      > .Preview-inner {
+        border-radius: 20px;
+
+        &::-webkit-scrollbar {
+          display: none;
+        }
+        -ms-overflow-style: none; /* IE and Edge */
+        scrollbar-width: none; /* Firefox */
+
+        background: transparent;
+        overflow-x: hidden;
+        overflow-y: auto;
+        transform: scale(1);
+        transform-origin: center top;
+        height: 100%;
+        display: block;
+        position: relative;
+
+        &::-webkit-scrollbar {
+          display: none;
+        }
+
+        // &::before {
+        //   content: '';
+        //   height: 40px;
+        //   position: sticky;
+        //   top: 0;
+        //   width: 100%;
+        //   background: #ddd;
+        //   flex-shrink: 0;
+        //   display: block;
+        // }
+      }
+    }
+  }
+
+
+  .previewIFrame {
+    min-height: 100%;
+    width: 100%;
+    pointer-events: all !important;
+    height: auto !important;
+    border-width: 0px !important;
+    border-style: initial !important;
+    border-color: initial !important;
+    border-image: initial !important;
+  }
+}
+

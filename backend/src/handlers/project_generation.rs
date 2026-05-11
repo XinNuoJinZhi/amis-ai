@@ -183,7 +183,21 @@ pub async fn create_task(
         Some(n) => Some(n),
         None => Some(format!("{}-template", tech_stack)),
     };
-    let explicit_buckets_arr = payload.explicit_buckets.clone().unwrap_or_default();
+    // explicit_buckets：用户显式指定优先；否则用 template.default_skill_buckets 兜底
+    // （1.3 引入：让 platform-zc-web / zc-amis-schema 这类 knowledge 桶能被 ZC 模板自动激活，
+    //   维度 selector 命不中 kind=knowledge 的桶，必须靠 template default 注入）
+    let explicit_buckets_arr: Vec<String> = {
+        let user_specified = payload.explicit_buckets.clone().unwrap_or_default();
+        if !user_specified.is_empty() {
+            user_specified
+        } else {
+            template_name
+                .as_deref()
+                .and_then(|n| state.template_registry.get(n))
+                .map(|t| t.default_skill_buckets.clone())
+                .unwrap_or_default()
+        }
+    };
 
     // 0. 先决策本次任务用哪个 LLM（manual / auto / default）
     let decision = match llm_selector::select_for_task(
@@ -302,14 +316,16 @@ pub async fn create_task(
         payload.amis_json.clone(),
     ));
 
-    // 2. 拉起 sandbox（2026-04：把 template 的 dev_command 一起下发给 sandbox）
+    // 2. 拉起 sandbox（2026-04：dev_command；1.3：+ image，按模板路由 ZC Web 等专属镜像）
     let sandbox = SandboxClient::new(state.http_client.clone(), state.sandbox_url.clone());
-    let dev_command_for_sandbox: Option<String> = template_name
+    let tpl_for_sandbox = template_name
         .as_deref()
-        .and_then(|n| state.template_registry.get(n))
-        .and_then(|t| t.dev_command.clone());
+        .and_then(|n| state.template_registry.get(n));
+    let dev_command_for_sandbox: Option<String> =
+        tpl_for_sandbox.and_then(|t| t.dev_command.clone());
+    let image_for_sandbox: Option<String> = tpl_for_sandbox.and_then(|t| t.image.clone());
     let sandbox_info = match sandbox
-        .create_with(&task_id_str, dev_command_for_sandbox)
+        .create_with(&task_id_str, dev_command_for_sandbox, image_for_sandbox)
         .await
     {
         Ok(s) => s,

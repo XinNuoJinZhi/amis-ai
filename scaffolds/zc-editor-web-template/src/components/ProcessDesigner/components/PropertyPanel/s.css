@@ -1,0 +1,24 @@
+/* .antd-Modal-content { */
+  /* max-width: calc(100% - 60px) !important;
+} */
+:where(.css-dev-only-do-not-override-1lv7e42).ant-drawer{
+  z-index:6666
+}
+:where(.css-dev-only-do-not-override-1lv7e42).ant-modal-root .ant-modal-wrap{
+  z-index:6666
+}
+:where(.css-dev-only-do-not-override-1lv7e42).ant-select-dropdown-hidden{
+  z-index:9999
+}
+:where(.css-dev-only-do-not-override-1lv7e42).ant-tooltip .ant-tooltip-inner{
+  z-index:9999
+}
+:where(.css-dev-only-do-not-override-1lv7e42).ant-select-dropdown{
+  z-index:9999
+}
+.antd-Modal--1th{
+  z-index: 1111;
+}
+.antd-Modal--2th{
+  z-index: 4444;
+}

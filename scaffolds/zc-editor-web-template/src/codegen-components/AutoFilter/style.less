@@ -1,0 +1,94 @@
+.auto-filter-card {
+  margin-bottom: 16px;
+
+  .ant-card-head {
+    border-bottom: 1px solid #f0f0f0;
+
+    .ant-card-head-title {
+      font-weight: 500;
+      font-size: 14px;
+    }
+
+    .ant-card-extra {
+      .ant-btn-link {
+        padding: 0;
+        height: auto;
+        font-size: 13px;
+
+        .anticon {
+          font-size: 12px;
+          margin-left: 4px;
+        }
+      }
+    }
+  }
+
+  .ant-card-body {
+    padding: 16px 24px;
+  }
+
+  .auto-filter-actions {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid #f0f0f0;
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  // 确保 Form.Item 不溢出 Col
+  .ant-col {
+    min-width: 0; // 防止 flex 子元素溢出
+    overflow: hidden;
+  }
+
+  // Form.Item 占满 Col 宽度
+  .ant-form-item {
+    margin-bottom: 0;
+    width: 100%;
+
+    // label 和 wrapper 的布局
+    .ant-form-item-label {
+      flex-shrink: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ant-form-item-control {
+      flex: 1;
+      min-width: 0;
+
+      .ant-form-item-control-input {
+        min-width: 0;
+      }
+    }
+
+    // 确保输入框占满宽度
+    input,
+    .ant-input,
+    .ant-select,
+    .ant-picker,
+    .ant-input-number {
+      width: 100%;
+    }
+  }
+}
+
+// 响应式布局
+@media (max-width: 1200px) {
+  .auto-filter-card {
+    .ant-col-8 {
+      flex: 0 0 50%;
+      max-width: 50%;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .auto-filter-card {
+    .ant-col-8 {
+      flex: 0 0 100%;
+      max-width: 100%;
+    }
+  }
+}

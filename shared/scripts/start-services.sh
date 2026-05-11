@@ -272,6 +272,15 @@ check() {
     fail=1
   fi
 
+  # 4.1 ZC Web 沙箱镜像（1.3 引入；非必须，ZC Web 模板任务才需要）
+  if docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+      | grep -q '^amis-ai-sandbox:zc-web-node20$'; then
+    echo "  ✅ 沙箱镜像 amis-ai-sandbox:zc-web-node20 已存在（1.3 ZC Web 用）"
+  else
+    echo "  ⚠️  沙箱镜像 amis-ai-sandbox:zc-web-node20 不存在（仅 ZC Web 模板任务需要）"
+    echo "     cd $AMIS_ROOT/shared/docker/sandbox/zc-web-node20 && docker build -t amis-ai-sandbox:zc-web-node20 ."
+  fi
+
   # 5. Rust 二进制
   for bin in "$SANDBOX_BIN" "$CLAW_BIN" "$BACKEND_BIN"; do
     if [[ -x "$bin" ]]; then

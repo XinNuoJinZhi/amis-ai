@@ -1,0 +1,37 @@
+/* .djs-palette .entry[data-action="hand-tool"], */
+/* .djs-palette .entry[data-action="lasso-tool"], */
+.djs-palette .entry[data-action="space-tool"],
+.djs-palette .entry[data-action="create.intermediate-event"],
+.djs-palette .entry[data-action="create.data-object"],
+.djs-palette .entry[data-action="create.subprocess-expanded"],
+.djs-palette .entry[data-action="create.data-store"],
+.djs-palette .entry[data-action="create.participant-expanded"],
+.djs-palette .entry[data-action="create.group"],
+.group .entry[data-action="append.intermediate-event"],
+.group .entry[data-id="replace-with-send-task"],
+.group .entry[data-id="replace-with-receive-task"],
+.group .entry[data-id="replace-with-manual-task"],
+.group .entry[data-id="replace-with-rule-task"],
+.group .entry[data-id="replace-with-call-activity"],
+.group .entry[data-id="replace-with-collapsed-subprocess"],
+.group .entry[data-id="replace-with-expanded-subprocess"],
+.group .entry[data-id="toggle-loop"],
+.group .entry[data-id="replace-with-none-intermediate-throwing"],
+.group .entry[data-id="replace-with-message-start"],
+.group .entry[data-id="replace-with-conditional-start"],
+.group .entry[data-id="replace-with-signal-start"],
+.group .entry[data-id="replace-with-complex-gateway"],
+.group .entry[data-id="replace-with-event-based-gateway"],
+.group .entry[data-id="replace-with-script-task"],
+.group .entry[data-id="replace-with-none-intermediate-throw"],
+.group .entry[data-id="replace-with-message-end"],
+.group .entry[data-id="replace-with-escalation-end"],
+.group .entry[data-id="replace-with-error-end"],
+.group .entry[data-id="replace-with-compensation-end"],
+.group .entry[data-id="replace-with-signal-end"],
+.group .entry[data-id="replace-with-terminate-end"],
+.group .entry[data-id="replace-with-timer-start"],
+.bts-toggle-mode
+{
+  display: none;
+}
