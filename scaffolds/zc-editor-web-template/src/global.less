@@ -1,0 +1,264 @@
+@import 'styles/index.css';
+// 引入 Tailwind 基础样式、工具类
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: "AlibabaSans";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("//mdn.alipayobjects.com/huamei_iwk9zp/afts/file/A*1GSgSYDD_aIAAAAAQsAAAAgAegCCAQ/AlibabaSans-Light.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "AlibabaSans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("//mdn.alipayobjects.com/huamei_iwk9zp/afts/file/A*2zEUQqnPNesAAAAAQtAAAAgAegCCAQ/AlibabaSans-Regular.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "AlibabaSans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("//mdn.alipayobjects.com/huamei_iwk9zp/afts/file/A*E_cxRbMlZqUAAAAAQuAAAAgAegCCAQ/AlibabaSans-Medium.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "AlibabaSans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("//mdn.alipayobjects.com/huamei_iwk9zp/afts/file/A*E_cxRbMlZqUAAAAAQuAAAAgAegCCAQ/AlibabaSans-Bold.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "AlibabaSans";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("//mdn.alipayobjects.com/huamei_iwk9zp/afts/file/A*E_cxRbMlZqUAAAAAQuAAAAgAegCCAQ/AlibabaSans-Heavy.woff2")
+    format("woff2");
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family:
+    AlibabaSans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans',
+    sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+}
+
+.colorWeak {
+  filter: invert(80%);
+}
+
+.ant-layout {
+  min-height: 100vh;
+}
+.ant-pro-sider.ant-layout-sider.ant-pro-sider-fixed {
+  left: unset;
+}
+
+.ant-page-header .ant-page-header-heading-title {
+  font-size: 16px !important; // 自定义大小（默认约 18px）
+}
+
+.ant-pro-page-container .ant-pro-page-container-warp-page-header {
+  padding-block-end: 5px !important;
+}
+
+.ant-form-inline .ant-form-item-inline {
+  margin-bottom: 24px;
+}
+
+canvas {
+  display: block;
+}
+
+body {
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+// InputNumber 加强版样式 - 移除 addon 的左右 padding
+.input-number-enhance {
+  .ant-input-number-group-addon {
+    padding: 0;
+  }
+}
+
+// ============================================
+// Button Group 按钮组样式
+// 参考 ZC Amis 源码实现
+// ============================================
+
+// 基础按钮组样式
+.button-group {
+  display: inline-flex;
+  vertical-align: middle;
+  flex-wrap: wrap;
+
+  > .ant-btn {
+    position: relative;
+    flex: 0 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+
+    &:hover,
+    &:focus,
+    &:active,
+    &.active {
+      z-index: 1;
+    }
+  }
+
+  // 相邻按钮边框合并
+  > .ant-btn + .ant-btn {
+    margin-left: -1px;
+  }
+
+  // 第一个按钮保持左侧圆角
+  > .ant-btn:first-child:not(:last-child) {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  // 最后一个按钮保持右侧圆角
+  > .ant-btn:last-child:not(:first-child) {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+
+  // 中间按钮无圆角
+  > .ant-btn:not(:first-child):not(:last-child) {
+    border-radius: 0;
+  }
+}
+
+// 垂直模式
+.button-group--vertical {
+  flex-direction: column;
+  align-items: flex-start;
+
+  > .ant-btn {
+    width: 100%;
+  }
+
+  > .ant-btn + .ant-btn {
+    margin-left: 0;
+    margin-top: -1px;
+  }
+
+  // 第一个按钮保持顶部圆角
+  > .ant-btn:first-child:not(:last-child) {
+    border-top-right-radius: 6px;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  // 最后一个按钮保持底部圆角
+  > .ant-btn:last-child:not(:first-child) {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+    border-bottom-left-radius: 6px;
+  }
+
+  // 中间按钮无圆角
+  > .ant-btn:not(:first-child):not(:last-child) {
+    border-radius: 0;
+  }
+}
+
+// 平铺模式 - 使用 Ant Design Space 组件时的样式适配
+.button-group--tiled,
+.ant-space.button-group-tiled {
+  display: flex;
+
+  > .ant-space-item {
+    flex-grow: 1;
+
+    > .ant-btn {
+      width: 100%;
+    }
+  }
+
+  // 相邻按钮边框合并
+  > .ant-space-item + .ant-space-item {
+    margin-left: -1px !important;
+  }
+
+  // 第一个按钮
+  > .ant-space-item:first-child > .ant-btn {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  // 最后一个按钮
+  > .ant-space-item:last-child > .ant-btn {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+
+  // 中间按钮
+  > .ant-space-item:not(:first-child):not(:last-child) > .ant-btn {
+    border-radius: 0;
+  }
+}
+
+// 为 Space 组件添加平铺模式样式（当 size={0} 且 wrap={true} 时）
+.ant-space[class*="ant-space-gap-row-0"][class*="ant-space-gap-col-0"] {
+  // 相邻按钮边框合并
+  > .ant-space-item + .ant-space-item {
+    margin-left: -1px;
+  }
+
+  // 第一个按钮
+  > .ant-space-item:first-child > .ant-btn {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  // 最后一个按钮
+  > .ant-space-item:last-child > .ant-btn {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+
+  // 中间按钮
+  > .ant-space-item:not(:first-child):not(:last-child) > .ant-btn {
+    border-radius: 0;
+  }
+}
+
+@media (max-width: 768px) {
+  .ant-table {
+    width: 100%;
+    overflow-x: auto;
+    &-thead > tr,
+    &-tbody > tr {
+      > th,
+      > td {
+        white-space: pre;
+        > span {
+          display: block;
+        }
+      }
+    }
+  }
+}
+

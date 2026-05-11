@@ -1,0 +1,1110 @@
+/* 滚动条样式修改 */
+/* 宽高 */
+div::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+  /* 滚动的滑块 */
+div::-webkit-scrollbar-thumb {
+    border-radius: 10px;
+    box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.2);
+    background: rgba(0, 0, 0, 0.2);
+}
+  /* 外层轨道 */
+div::-webkit-scrollbar-track {
+    box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.2);
+    border-radius: 0;
+    background: rgba(0, 0, 0, 0.1);
+}
+.button {
+    margin-bottom: 10px;
+}
+.page_title{
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 28px;
+}
+.text-dark {
+    color: #343a40;
+}
+.design_page_button{
+    float: right;
+    margin: 0 20px;
+    position: relative;
+    z-index: 999;
+}
+.design_3d_button{
+    float: right;
+    margin: 0 20px 0 0;
+    position: relative;
+    z-index: 999;
+}
+.pageManage_toolbar {
+    transform: scale(1);
+}
+.pageManage_toolbar .antd-Page-toolbar{
+    /* height: 30px; */
+    margin-top: -10px;
+}
+.empty-img{
+    display: flex;
+    justify-content: center;
+    padding-top: 180px;
+    padding-bottom: 20px;
+}
+.empty-info {
+    display: flex;
+    justify-content: center;
+}
+.no_show{
+    display: none;
+}
+.login_info{
+    display: flex;
+    justify-content: center;
+    /* padding-top: 150px; */
+}
+.login_info .antd-Container-body{
+    display: flex;
+}
+.login_info_title{
+    font-size: 36px;
+    padding-left: 10px;
+    color: #5c5f66;
+    display: flex;
+    padding-top:5px;
+}
+.login_portal_title{
+    font-size: 24px;
+    padding-left: 10px;
+    color: #5c5f66;
+    display: flex;
+    padding-top:5px;
+}
+.individualCenter .individualCenterMenu{
+    width: 112px;
+}
+.individualCenter .antd-DropDown-menu{
+    min-width: 112px;
+}
+.individualCenter .antd-DropDown-menu-root{
+    position: absolute;
+    z-index: 1000;
+    left: 50%;
+    transform: translateX(-50%)
+}
+.individualCenter button{
+    color:black;
+    /* width: 86px; */
+}
+.fa-user-cog{
+    padding-right:5px;
+}
+.fa-external-link{
+    padding-right:5px;
+}
+.fa-sign-out{
+    padding-right:5px;
+}
+.user_info{
+    /* border: 1px solid red; */
+    width: 35%;
+    margin-right: 10px;
+}
+.basic_info{
+    /* border: 1px solid blue; */
+    width: 70%;
+}
+.userProfile{
+    display: flex;
+}
+.personInfo{
+    display: flex;
+    justify-content: center;
+}
+.user_info .antd-Form-item {
+    margin-bottom: 0;
+}
+.user_info .antd-Divider {
+    /* margin-bottom: 0; */
+    margin-top: 6px;
+    margin-bottom: 6px;
+}
+.login_info_img .antd-Image-thumb{
+    width: 60px;
+    height: 60px;
+}
+.userProfile .antd-Panel-btnToolbar{
+    text-align: center;
+}
+.basic_info .save_button{
+    /* margin-left: 160px; */
+    margin-right: 10px;
+}
+.basic_info .individual_save_button{
+    text-align: center;
+}
+.user_info_image{
+    text-align: center;
+    padding-top: 12px;
+}
+.login_info .antd-Image {
+    border:none;
+}
+.login_info_page .antd-Page-main{
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+.login_info_page .antd-Page-body {
+    flex: none;
+}
+.station_message{
+    display: flex;
+}
+.station_message .antd-TooltipWrapper {
+    margin-bottom:0;
+}
+.message-content {
+    display: flex;
+    flex-direction: column;
+    margin-left: 5px;
+    max-height: 200px;
+    overflow: auto;
+}
+.message-title {
+    margin-bottom: 5px;
+    justify-content: left;
+    align-self: flex-start;
+}
+.message-date {
+    font-size: 12px;
+    color: #909399;
+}
+.message-list {
+    display: flex;
+    flex-direction: column;
+    max-height: 500px;
+    overflow: auto;
+}
+.message-item {
+    display: flex;
+    align-items: center;
+    padding: 20px 0;
+    border-bottom: 1px solid #e4e7ed;
+}
+.message-item-noBorder {
+    display: flex;
+    align-items: center;
+    padding: 20px 0;
+    border-bottom: 0;
+}
+.message-icon {
+    height: 40px;
+    margin: 0 20px 0 5px;
+}
+
+.message-content {
+    display: flex;
+    flex-direction: column;
+    margin-left: 5px;
+    max-height: 200px;
+    overflow: auto;
+}
+.message-content a{
+    color:black;
+}
+.message-content a:hover{
+    color:#528eff;
+    cursor: pointer;
+}
+.message-title {
+    margin-bottom: 5px;
+    justify-content: left;
+    align-self: flex-start;
+}
+.message-date {
+    font-size: 12px;
+    color: #909399;
+}
+.portalManage_list {
+    padding-top: 20px;
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+}
+.portalManage_list :hover .portalManage_list_one_bottom{
+    display: block;
+}
+.portal_page .antd-Card {
+    border: 0;
+}
+.portalManage_list_one{
+    width: 220px;
+    height: 150px;
+    border: 1px solid#e4e7ed;
+    margin-right: 30px;
+    cursor: pointer;
+    margin-bottom: 20px;
+}
+.portalManage_list .antd-Wrapper--md{
+    padding: 0;
+}
+.portalManage_list_one_top img {
+    width:20px !important;
+    height:20px !important;
+}
+.portalManage_list_one_top .antd-Image-thumb {
+    width:20px !important;
+    height:20px !important;
+}
+.portalManage_list_one_top {
+    display: flex;
+    padding-top: 20px !important;
+    padding-left: 10px !important;
+    justify-content: space-between;
+}
+.portalManage_name {
+    padding-left: 10px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    width: 120px;
+    height: 30px;
+    line-height: 30px;
+}
+.portalManage_category {
+    padding-right: 10px;
+    padding-top: 5px;
+}
+.portalManage_list_one_middle {
+    display: flex;
+    padding-top: 20px !important;
+    padding-left: 10px !important;
+    justify-content: space-between;
+    font-size:12px;
+    color:#A8A8A8;
+    height: 54px;
+}
+.portalManage_list_one_middle_info span {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    width: 210px;
+}
+.portalManage_list_one_bottom {
+    display:none;
+}
+.portalManage_list_one_bottom_info{
+    display:flex;
+    justify-content: space-around;
+    background-color: #E0E0E0;
+    margin-top: 10px;
+    color:#A8A8A8;
+    font-size:12px;
+    height:34px;
+    line-height: 34px;;
+}
+.portalManage_list_icon {
+    padding-right: 5px;
+}
+.menu {
+    border: 1px solid #e8e9eb;
+    margin-bottom: 10px;
+}
+.menu_title {
+    display: flex;
+    justify-content: space-between;
+}
+.menu_title_left {
+    height: 40px;
+    line-height: 40px;
+    padding-left: 20px;
+}
+.menu_set {
+    height: 40px;
+    line-height: 40px;
+    padding-left: 20px;
+}
+.menu_set :hover{
+    cursor: pointer;
+}
+.menu_set a{
+    padding-right: 20px;
+}
+.menu_tree {
+    /* background: #84878c; */
+    height: 270px;
+    overflow-y: auto;
+}
+.menu_tree .antd-Tree-itemText{
+    text-overflow: ellipsis;
+	display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    max-width: 70%;
+}
+.menuList_info{
+    color:#84878c;
+}
+.menuList_null_info{
+    height: 240px;
+    text-align: center;
+    padding-top: 120px;
+}
+.menuList_null_info a:hover{
+    cursor: pointer;
+}
+.portal_badge .antd-Container-body{
+    display: flex;
+}
+.portal_badge_Y label{
+    width: 0 !important;
+}
+.badgeOffsetX .antd-Form-itemColumn--2{
+    flex: 0 0 35% !important;
+    max-width: 35% !important;
+}
+
+.tree_info {
+    width: 100% !important;
+}
+
+.tree_info .antd-Form-value {
+    width: 100% !important;
+}
+
+.tree_info .antd-TreeControl {
+    width: 100% !important;
+}
+
+.tree_info .antd-Form-label{
+    width: 0;
+}
+.diffEditor .antd-Form-label{
+    width: 0;
+}
+.api_label label{
+    width: 0 !important;
+
+}
+
+.ResourceAcl_Config{
+    display: flex;
+    width: 100%;
+    height: 100%;
+}
+
+.role_list {
+    width: 15%;
+    /* height: 80vh; */
+    border-left: 1px solid #e8e9eb;
+    margin-left: 20px;
+    border-bottom: 1px solid #e8e9eb;
+}
+
+.resource_list {
+    width: 15%;
+    /* height: 80vh; */
+    border-left: 1px solid #e8e9eb;
+    border-bottom: 1px solid #e8e9eb;
+}
+.role_list_listitem{
+    height: 28px;
+    line-height:18px;
+    font-size: 12px;
+    font-weight: 400;
+    padding: 5px 30px;
+    cursor: pointer;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.role_list_listitem:hover {
+    background-color: #f7f8fa;
+}
+.resource_detail {
+    width: 65%;
+    height: 80vh;
+    border-left: 1px solid #e8e9eb;
+    border-bottom: 1px solid #e8e9eb;
+    overflow: scroll;
+}
+.role_list_title{
+    /* font-size: 12px; */
+    /* font-weight: 700; */
+    padding: 5px 20px;
+    font-size: var(--Form-item-fontSize);
+    color: var(--Form-item-fontColor);
+}
+
+.isActive {
+    background-color:var(--colors-neutral-fill-8);
+    color: var(--colors-brand-5);
+    border-left: 3px solid var(--colors-brand-5);
+}
+.isActive:hover {
+    background-color:var(--colors-neutral-fill-8);
+    color: var(--colors-brand-5);
+
+}
+.role_list_listitem:hover{
+    color: var(--colors-brand-5)
+}
+.acl-item{
+    padding-left: 30px;
+    position: relative;
+    clear: both;
+}
+.acl-item.has-child::before {
+    content: "";
+    position: absolute;
+    width: 1px;
+    top: 30px;
+    bottom: 0;
+    left: 40px;
+    height: calc(100% - 40px);
+    background-color: #dee2e6;
+}
+.acl-item.has-child::after {
+    content: "";
+    position: absolute;
+    width: 10px;
+    height: 1px;
+    top: 11px;
+    left: 10px;
+    background-color: #dee2e6;
+}
+.acl-item::after {
+    content: "";
+    position: absolute;
+    width: 10px;
+    height: 1px;
+    top: 11px;
+    left: 10px;
+    background-color: #dee2e6;
+}
+.acl-item-label {
+    display: flex;
+}
+.acl-item-label .divider {
+    flex: 1;
+    border-bottom: 1px dashed #dee2e6;
+    position: relative;
+    top: 11px;
+    height: 1px;
+    left: 10px;
+    margin-right: 15px;
+}
+.acl-item-config {
+    float: right;
+    position: relative;
+    top: -21px;
+    background: #fff;
+    padding-left: 15px;
+    width: 220px;
+}
+.acl-item-config .antd-Page-body {
+    padding-top: 0;
+}
+.acl-item-config .antd-CheckboxesControl {
+    padding-top: 0;
+}
+.acl-item-config .antd-Checkboxes-addBtn {
+    display: block;
+}
+.acl_list_title{
+    font-size: 12px;
+    font-weight: 700;
+    padding: 5px 20px;
+}
+.acl_list_form{
+    padding-left:40px;
+}
+.acl_page_div{
+    padding-bottom: 0;
+    padding-top: 0;
+}
+.acl_page{
+    height: calc(100vh - 235px);
+    overflow: auto;
+}
+.acl_list_form .antd-Form-item {
+    display: flex;
+}
+.acl_list_form .antd-Form-label{
+    width: 40px;
+}
+.table-placeholder{
+    margin: 80px auto;
+    position: relative;
+    padding-left: 180px;
+    padding-top: 26px;
+    width: 360px;
+    min-height: 100px;
+    text-align: left;
+    color: var(--body-color);
+    font-size: 12px;
+    cursor: default;
+}
+.table-placeholder::before {
+    content: "";
+    display: block;
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 140px;
+    height: 101px;
+    background: url(@/assets/img/empty@2x_25d7aa6.png) no-repeat;
+    background-size: contain;
+}
+.resourceCfg_save_button{
+    margin-left: 30px;
+}
+.acl-item-config .antd-Checkboxes-addBtn{
+    cursor: pointer;
+}
+.ResourceAcl_Config_Save button{
+    /* cursor: pointer;
+    margin-left: 30px;
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.5;
+    border-radius: 4px;
+    height: 2rem;
+    padding: 0.25rem 0.75rem;
+    background: #2468f2;
+    border-color: #2468f2;
+    border-width: 1px;
+    color: #ffffff; */
+    background-color:var(--button-primary-default-bg-color)
+}
+.ResourceAcl_Config_Save{
+    padding-top: 24px;
+    padding-left: 30px;
+}
+.portal_list_menu{
+    /* height: 150px; */
+    max-width: 200px;
+}
+.portal_list_menu a{
+  overflow: hidden; /* 确保超出容器的文本被裁剪 */
+  white-space: nowrap; /* 确保文本在一行内显示 */
+  text-overflow: ellipsis; /* 使用省略号表示被裁剪的文本 */
+}
+.portal_list_menu i{
+    padding-right: 5px;
+}
+.appPublish_confirm {
+    border: 1px dashed #2468f2;
+    padding: 10px;
+    /* margin-bottom: 8px; */
+}
+.appPublish_code{
+    margin: 0;
+    padding-bottom: 0;
+}
+.appPublish_tpl{
+    display: block;
+}
+.appPublish_confirm_label .antd-Form-label {
+    width: 0;
+    margin-right: 0;
+}
+.appPublish_confirm_label .antd-Form-itemColumn--normal{
+    width: 0;
+}
+.publish_diff .antd-Page-body{
+    padding-top:0;
+    padding-left:0;
+}
+.publish_diff .antd-EditorControl--xxl {
+    min-height: 640px;
+}
+.publish_diff .antd-EditorControl--xxl > .antd-MonacoEditor {
+    min-height: 640px;
+}
+.start-info{
+    display: flex;
+    justify-content: center;
+    font-size: 24px;
+    color: #dee2e6;
+}
+/* 主题card样式 */
+.theme-tabs .antd-Tabs-links {
+    display: none;
+}
+/* .theme-tabs .antd-Cards .antd-Grid-col--sm4 {
+    max-width: initial !important;
+} */
+.card-crud .antd-Cards-body,
+.table-crud .antd-Table-content {
+    height: calc(100vh - 240px) !important;
+    overflow: auto;
+}
+.card-crud .antd-Cards-body {
+    height: calc(100vh - 256px) !important;
+}
+.theme-card {
+    margin: 10px 16px;
+    min-width: 360px;
+    position: relative;
+    max-height: 318px;
+}
+.theme-card .antd-Card-body {
+    padding: 0;
+}
+.theme-card-image {
+    width: 100%;
+    height: 240px;
+    padding: 20px;
+    background: #e6f0ff;
+}
+.theme-image-empty {
+    width: 100%;
+    height: 240px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.theme-card-image * {
+    width: 100%;
+    height: 100%;
+}
+.theme-card-cont {
+    padding: 10px;
+}
+.theme-card-ellipsis{
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.theme-card-flex {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+.theme-card-flex-sub {
+    font-size: 12px;
+    color: #999;
+}
+.theme-card-icon {
+    margin-right: 5px;
+    font-size: 16px;
+    vertical-align: middle;
+    border: none !important;
+    min-width: 0 !important;
+}
+.theme-card-icon .fa-share-alt {
+    color: #999;
+}
+.theme-card-icon.cursor {
+    cursor: not-allowed !important;
+}
+.theme-card-icon.active .fa-share-alt {
+    color: #35a0ff !important;
+}
+.theme-card-icon .fa-star-o {
+    color: #e2b919;
+}
+.theme-card-mask  {
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 1;
+    width: 100%;
+    height: 240px;
+    display: none;
+    background: rgba(0, 0, 0, 0.4);
+    opacity: 0;
+    transition: all ease-in-out 0.5s;
+}
+.theme-card-mask > *,
+.theme-card-opts {
+    width: 100%;
+    height: 100%;
+}
+.theme-card-opts-menu {
+    width: 50px;
+    height: 50px;
+    margin: 0 10px;
+    flex: none;
+}
+.theme-card-opts-menu i.fa {
+    font-size: 18px !important;
+}
+.theme-card:hover .theme-card-mask {
+    display: block;
+    opacity: 1
+}
+.theme-checkbox i:before {
+    height: 5px !important;
+}
+.theme-fieldset .generate {
+    position: absolute;
+    right: 0;
+    top: -2px;
+    z-index: 10;
+}
+.theme-fieldset .generateDelete {
+    position: absolute;
+    left: 70px;
+    top: -2px;
+    z-index: 10;
+}
+.theme-fieldset::after {
+    content: none!important;
+}
+.theme-sub-color {
+    padding-left: 20px;
+    margin-top: 10px;
+}
+.theme-sub-color .antd-Form-item {
+    margin-bottom: 10px;
+}
+.theme-sub-color .antd-Form-label {
+    font-size: 12px;
+}
+.appPermission_page{
+    height: calc(100vh - 255px);
+    overflow: auto;
+}
+.appPublish_select .antd-Form-label{
+    width: 30px;
+}
+.publish_select{
+    margin-bottom: 24px;
+}
+.publish_select .antd-Page-body{
+    padding-top: 0px;
+    padding-bottom: 0px;
+}
+.process_detail{
+    height: calc(100vh - 160px);
+    overflow: auto;
+}
+.process_restart{
+    height: calc(100vh - 80px);
+    overflow: auto;
+}
+#entityDiagramContainer .box-card {
+    position: fixed;
+    z-index: 999;
+    min-width: 150px;
+    padding: 6px 0;
+    font-size: 14px;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 2px;
+    box-shadow: 0 0 6px rgb(102 102 102 / 30%);
+}
+#entityDiagramContainer .box-card ul li {
+    display: block;
+    height: 26px;
+    padding: 0 16px;
+    overflow: hidden;
+    line-height: 26px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+#entityDiagramContainer .box-card ul li span{
+    width: 16px;
+    margin-right: 8px;
+    color: #999;
+    text-align: right;
+}
+#entityDiagramContainer {
+    position: relative;
+    flex: 1;
+}
+.iconShowBtn{
+    color: var(--colors-brand-5);
+}
+.flowRecord{
+    color: var(--body-color);
+}
+.processDetail .antd-Form-item--horizontal .antd-Form-itemColumn--normal{
+    width: 0
+}
+.antd-Page--asideSticky > .antd-Page-aside {
+    max-height: calc(100vh - var(--affix-offset-top) - var(--affix-offset-bottom) - 1.875rem);
+}
+.pageManage .antd-Table-fixedTop {
+    top: 0;
+}
+.approveForm .antd-InputGroup-addOn, .antd-InputGroup .antd-Form-control {
+    display: flex;
+    white-space: nowrap;
+}
+.antd-Form-value .antd-Form-static .antd-Button--size-sm{
+    height: 0;
+}
+.flowRecord a{
+    color: var(--link-onHover-color);
+    display: block;
+}
+.bg0 img{
+    background-color: #0bc286 !important;
+}
+.bg1 img{
+    background-color: #ff9326 !important;
+}
+.bg2 img{
+    background-color:#2468f2 !important;
+}
+.bg3 img{
+    background-color:#a324f2 !important;
+}
+.bg4 img{
+    background-color:#f22457 !important;
+}
+
+.levelAuth .antd-Tree-itemText{
+    width: 100%;
+}
+.levelAuth .antd-TplField{
+    width: 100%;
+}
+/* 进度条颜色 */
+.antd-Steps .antd-StepsItem.is-process .antd-StepsItem-icon {
+    background-color: #303540;
+    border: 1px solid #303540;
+}
+
+/* 完成颜色 */
+.antd-Steps .antd-StepsItem.is-finish .antd-StepsItem-icon {
+    background-color: #303540;
+    border: 1px solid #303540;
+}
+
+/* 结束 */
+
+/* 左侧按钮 */
+.left_page {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.left_page > .antd-Page-content > .antd-Page-main > .antd-Page-body {
+    padding: 0;
+}
+
+.text-dark {
+    color: #343a40;
+}
+
+
+
+.ceshi {
+    width: 0px !important;
+    height: 0px !important;
+}
+
+.antd-Form .antd-Collapse {
+    border: none;
+}
+
+/* .antd-Modal-content {
+    max-width: 800px !important;
+} */
+.left_page_search{
+    padding-top: 10px;
+    padding-bottom: 5px;
+}
+.dataDict_search .antd-Form-item{
+    margin-bottom: 0;
+}
+.add_plus{
+    float: right;
+}
+.tab_padding_top{
+    padding-top: 20px;
+}
+.dict_wrapper{
+    padding-bottom: 0;
+}
+.appLog_filter .antd-Form-item{
+    padding-bottom:12px;
+}
+.publish_template .antd-Page-body{
+    padding: 0;
+}
+.pageManage{
+    height: calc(100vh - 160px) !important;
+}
+.pageManage .antd-Page-aside--withWidth{
+    width: 250px;
+}
+.entityManage {
+  height: calc(100vh - 160px);
+  overflow-y: auto
+}
+
+.entityManage .antd-Page-aside--withWidth{
+    width: 250px;
+}
+.formManage .antd-Page-aside--withWidth{
+    width: 250px;
+}
+.apiManage .antd-Page-aside--withWidth{
+    width: 250px;
+}
+.apiManage_use .antd-Modal-title{
+    word-break: break-all
+}
+.dictManage .antd-Page-aside--withWidth{
+    width: 250px;
+}
+.dataManage .antd-Page-aside{
+    width: 250px;
+}
+.dataManage{
+   height: calc(100vh - 160px);
+}
+.app-page-edit-toolbar{
+    position: fixed;
+    z-index: 9990;
+    right: 15px;
+    bottom: 25px;
+}
+.iconLeft{
+    padding-left:10px;
+}
+.export_excel_tableName:first-child {
+    overflow-x: scroll;
+}
+.importDataBaseSource .antd-Page-body {
+    display: flex;
+}
+.importDataBaseSource:first-child {
+    overflow-x: scroll;
+}
+.importDataBaseSource .antd-Container-body{
+    display: flex;
+}
+.importDataBaseSource .antd-Form-item{
+    margin-bottom: 0;
+}
+.importDataBaseSource .antd-Form-item--horizontal .antd-Form-itemColumn--normal{
+    width: 0
+}
+.importDataBaseSource > .antd-Form-label .antd-Form-itemColumn--normal :first-child {
+    width: 0
+}
+.iconImportDataBase{
+    padding-top: 2px;
+}
+.pageM_compare {
+    height: 84vh;
+}
+.page_diffEditor{
+    height: 83vh;
+}
+.page_diffEditor .antd-EditorControl{
+    max-height: 81vh;
+}
+.publish_version_info {
+    display: flex;
+    justify-content: space-evenly;
+}
+.app_publish_portal a{
+    overflow: hidden; /* 确保超出容器的文本被裁剪 */
+    white-space: nowrap; /* 确保文本在一行内显示 */
+    text-overflow: ellipsis; /* 使用省略号表示被裁剪的文本 */
+}
+.app_publish_portal .antd-DropDown-menu-root{
+    max-width: 200px;
+}
+.mtk1 {
+    color: #000000;
+}
+.mtk5 {
+    color: #0451a5;
+}
+.mtk7 {
+    color: #098658;
+}
+.mtk20 {
+    color: #a31515;
+}
+
+.publish_img_info .antd-Container-body {
+    display: flex;
+}
+.publish_img_info .antd-Image {
+    border: none;
+}
+.publish_img_info .antd-DropDown-menu-root{
+    top: 50%;
+}
+.member_month .antd-Container-body{
+    display: flex;
+}
+.member_quarter .antd-Container-body{
+    display: flex;
+}
+.member_year .antd-Container-body{
+    display: flex;
+}
+.member_fee_info .antd-Container-body{
+    display: flex;
+}
+.member_list .antd-Wrapper--md {
+    padding: 0;
+}
+.userProfile {
+    height: 85vh;
+    overflow-y: auto;
+}
+.userProfile_page {
+    height: 82vh;
+    overflow-y: hidden;
+}
+.userProfile_member .cxd-Wrapper--md {
+    padding: 0;
+}
+.userProfile_member {
+    height: 85vh !important;
+    overflow-y: auto;
+}
+.userProfile_member .antd-Panel-btnToolbar {
+    text-align: right !important;
+}
+.entity_detail .antd-Form-value{
+    padding-top: var(--Form-label-paddingTop);
+    padding-bottom: var(--Form-label-paddingTop);
+}
+.importDataBase_aside .antd-Tabs-linksWrapper{
+    max-height: 75vh;
+    overflow: scroll;
+}
+.serial_log {
+    margin-top: 17px;
+    margin-bottom: 20px;
+}
+.serial_log_clear {
+    margin-top: 17px;
+    margin-bottom: 20px;
+    margin-left: 10px;
+}
+.serial_clear{
+    display:inline-block;
+    margin-bottom: 20px;
+    margin-right: 10px;
+}
+.editPortalDialog .cxd-Page-body{
+    padding:0
+}
+
+.page-manage-scroll {
+  height: calc(100vh - 230px) !important;
+  overflow-y: auto;
+}

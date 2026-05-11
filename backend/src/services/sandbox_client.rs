@@ -14,6 +14,9 @@ pub struct CreateSandboxRequest {
     /// 2026-04：dev server 启动命令（由 template_registry 决定；None 则 sandbox 用默认 `pnpm run dev:h5`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dev_command: Option<String>,
+    /// 1.3：sandbox 镜像 tag（由 template_registry 决定；None 则 sandbox-service 用启动默认 uniapp-node20）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -34,12 +37,19 @@ impl SandboxClient {
     }
 
     /// 2026-04：允许 backend 在创建沙箱时下发 `dev_command`（由 template_registry 决定）。
+    /// 1.3：同时下发 `image` 选 sandbox 镜像（ZC Web 模板等）。
     /// 旧的 `create()` 兼容包装已删（无人使用），调用方一律走 `create_with`。
-    pub async fn create_with(&self, task_id: &str, dev_command: Option<String>) -> Result<SandboxInfo> {
+    pub async fn create_with(
+        &self,
+        task_id: &str,
+        dev_command: Option<String>,
+        image: Option<String>,
+    ) -> Result<SandboxInfo> {
         let url = format!("{}/sandboxes", self.base_url);
         let req = CreateSandboxRequest {
             task_id: task_id.to_string(),
             dev_command,
+            image,
         };
 
         let resp = self.client.post(&url).json(&req).send().await?;

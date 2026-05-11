@@ -34,6 +34,8 @@ pub struct CreateOpts<'a> {
     pub task_id: &'a str,
     pub host_workdir: &'a str,
     pub preview_port: u16,
+    /// 1.3 引入：可选 override sandbox 镜像。None 走 `DockerClient` 启动时默认（uniapp-node20）。
+    pub image: Option<&'a str>,
 }
 
 impl DockerClient {
@@ -100,8 +102,9 @@ impl DockerClient {
         let mut exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
         exposed.insert("5173/tcp".to_string(), HashMap::new());
 
+        let image_for_create = opts.image.unwrap_or(self.image.as_str()).to_string();
         let config = Config {
-            image: Some(self.image.clone()),
+            image: Some(image_for_create),
             working_dir: Some("/workspace".to_string()),
             host_config: Some(host_config),
             exposed_ports: Some(exposed),

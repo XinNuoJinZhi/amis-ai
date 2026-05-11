@@ -16,6 +16,10 @@ pub struct CreateSandboxRequest {
     /// 2026-04：由 backend 根据 template_registry 下发的 dev server 命令（可选）
     #[serde(default)]
     pub dev_command: Option<String>,
+    /// 1.3 引入：由 backend 根据 template_registry 下发的 sandbox 镜像 tag（可选）；
+    /// None 走 sandbox-service 启动时默认镜像。
+    #[serde(default)]
+    pub image: Option<String>,
 }
 
 pub async fn create_sandbox(
@@ -50,6 +54,7 @@ pub async fn create_sandbox(
             task_id: &payload.task_id,
             host_workdir: &workdir,
             preview_port: port,
+            image: payload.image.as_deref(),
         })
         .await
     {
