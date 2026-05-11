@@ -11,7 +11,7 @@
 //! 依赖：ureq（纯同步 HTTP），不依赖 tokio runtime。
 
 use crate::state::TaskEvent;
-use runtime::{AssistantEvent, RuntimeError};
+use runtime::{AssistantEvent, RuntimeError, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::BufRead;
@@ -69,9 +69,22 @@ pub struct OaFunctionSchema {
 
 // ================== SSE chunk 反序列化 ==================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ChatChunk {
+    #[serde(default)]
     choices: Vec<ChunkChoice>,
+    /// 1.4 W4 actual_cost 接入：OpenAI 兼容协议在 stream_options.include_usage=true 时
+    /// 最后一个 chunk 会带 usage 字段（choices 为空）
+    #[serde(default)]
+    usage: Option<UsageChunk>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct UsageChunk {
+    #[serde(default)]
+    prompt_tokens: u32,
+    #[serde(default)]
+    completion_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +142,9 @@ impl OpenAiStreamClient {
             "model": self.model,
             "stream": true,
             "messages": messages,
+            // 1.4 W4 actual_cost：让 OpenAI 兼容服务（SGLang/vLLM/Ollama）在 stream
+            // 最后一个 chunk 带 usage 字段。包括 input_tokens / output_tokens。
+            "stream_options": {"include_usage": true},
         });
         if !tools.is_empty() {
             body["tools"] = serde_json::to_value(&tools).unwrap();
@@ -241,6 +257,18 @@ impl OpenAiStreamClient {
                     continue;
                 }
             };
+
+            // 1.4 W4 actual_cost：stream 末尾 chunk 带 usage（choices 通常为空）
+            // 转成 AssistantEvent::Usage push 给下游，emit_llm_call_snapshot 会自动序列化
+            // 到 response_events 落 project_task_event 表
+            if let Some(u) = chunk.usage {
+                events.push(AssistantEvent::Usage(TokenUsage {
+                    input_tokens: u.prompt_tokens,
+                    output_tokens: u.completion_tokens,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                }));
+            }
 
             for choice in chunk.choices {
                 let delta = choice.delta;
