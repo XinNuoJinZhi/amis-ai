@@ -44,6 +44,21 @@ templates:
     preview_port_hint: 5173
     default_skill_buckets: [_common, platform-web, stack-react, ui-antd]
 
+  # ── 1.4 新增：Vue 3 + Element Plus + Vite（Web 端）
+  # 复用 uniapp-node20 通用 vite 镜像（pnpm + node20，无特殊系统依赖）
+  # AutoImport + Components 让 Agent 写业务页面零样板：直接 <el-button /> 即可
+  - name: vue3-element-plus-template
+    dir: vue3-element-plus-template
+    platform: web
+    tech_stacks: [vue3]
+    ui_libs: [element-plus]
+    bootstrap: [pnpm install]
+    dev_command: pnpm run dev
+    dev_log: /tmp/vite.log
+    preview_port_hint: 5173
+    default_skill_buckets: [_common, platform-web, stack-vue3, ui-element-plus]
+    # image 留空 → sandbox-service 走启动默认 amis-ai-sandbox:uniapp-node20（vite + node20 通用）
+
   # ── 1.3.1 新增：ZC Amis 小程序端（zc_uniapp / shopro 电商业务模板）
   # 基于 uniapp + Wot UI（公共 npm，不依赖 ZC 私有 nexus），完全复用 1.2 的 uniapp-node20 镜像
   # 跟 uniapp-wot-h5-template 的区别：业务页内置 shopro 电商套件（goods/order/pay/coupon/user/chat 等）

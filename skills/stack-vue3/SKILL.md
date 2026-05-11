@@ -5,7 +5,7 @@ kind: stack
 platforms: [web]
 tech_stacks: [vue3]
 requires: [_common, platform-web]
-conflicts: [stack-vue2]
+conflicts: [stack-vue2, stack-react]
 priority: 50
 ---
 
@@ -74,3 +74,14 @@ package.json
 4. 新页面必须在 `src/router/index.ts` 注册
 5. API 调用封装到 `src/api/` + `src/composables/`
 6. dev_start 验证
+
+## 进阶模式（references/）
+
+按需阅读，触发场景如下：
+
+| 文件 | 触发场景 |
+|---|---|
+| [composables-pattern.md](references/composables-pattern.md) | 跨组件复用逻辑（数据加载 / 表单管理 / 防抖） |
+| [router-guards-pattern.md](references/router-guards-pattern.md) | 登录鉴权 / 嵌套布局 / 动态路由 / 多页面任务路由生成 |
+| [pinia-store-pattern.md](references/pinia-store-pattern.md) | 跨组件共享状态（用户信息 / 全局配置 / 权限） |
+| [script-setup-pitfalls.md](references/script-setup-pitfalls.md) | props 解构 / ref unwrap / template ref 等高频坑（写业务前先扫一眼） |

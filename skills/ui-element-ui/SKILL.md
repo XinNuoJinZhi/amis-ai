@@ -4,6 +4,7 @@ description: Element UI（Vue 2）组件库映射规则，遗留项目适用
 kind: ui
 ui_libs: [element-ui]
 requires: [_common]
+conflicts: [ui-antd, ui-element-plus, ui-wot]
 priority: 30
 ---
 

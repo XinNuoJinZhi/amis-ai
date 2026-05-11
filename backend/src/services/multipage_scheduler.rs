@@ -576,6 +576,9 @@ async fn run_isolated_pages_with_shared_context(
         Some(&task.llm_mode),
         task.llm_provider_id,
         task.llm_model_name.as_deref(),
+        task.category.as_deref(),         // 1.4 A.2：复用 task 已分类的 category
+        task.category_confidence,
+        None,                              // force_tier：复用路径不再走 quota（额度已在 create_task 扣过）
     )
     .await
     .map_err(|e| SchedulerError::ClawAgent(format!("llm_selector 失败: {e}")))?;
@@ -690,6 +693,14 @@ async fn run_isolated_pages_with_shared_context(
                 }
                 .update(&state.db)
                 .await;
+                // 1.4 B.3b：page 完成 hook → 触发 LLM 评委评 amis schema
+                //   spawn 内部读 rag.judge.page_mode 总闸（默认 disabled，admin 启用后生效）
+                //   fire-and-forget，不阻塞主调度；评委结果回写 page_quality_*
+                crate::services::quality_judge::spawn_judge_for_page(
+                    state.clone(),
+                    page_id,
+                    "page_done",
+                );
                 format!("page_done:{page_idx}")
             }
             Err(err) => {
@@ -789,6 +800,9 @@ async fn build_stage_request(
         Some(&task.llm_mode),
         task.llm_provider_id,
         task.llm_model_name.as_deref(),
+        task.category.as_deref(),         // 1.4 A.2
+        task.category_confidence,
+        None,                              // force_tier：复用路径
     )
     .await
     .map_err(|e| SchedulerError::ClawAgent(format!("llm_selector 失败: {e}")))?;

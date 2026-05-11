@@ -6,6 +6,7 @@ pub mod multipage_reuse;
 pub mod multipage_scheduler;
 pub mod multipage_session_watcher;
 pub mod quality_judge;
+pub mod quota;
 pub mod route_inferer_client;
 pub mod sandbox_client;
 pub mod template_registry;

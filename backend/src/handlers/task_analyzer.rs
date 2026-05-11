@@ -87,7 +87,7 @@ pub async fn analyze_task(
     let meta_prompt = build_meta_prompt(&task, &summary);
 
     // 5. 选 LLM（沿用 select_default 链路）
-    let decision = llm_selector::select_for_task(&state, u.id, &task.amis_json, Some("default"), None, None)
+    let decision = llm_selector::select_for_task(&state, u.id, &task.amis_json, Some("default"), None, None, None, None, None)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("分析 LLM 选择失败: {}", e)}))))?;
 

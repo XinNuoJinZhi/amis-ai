@@ -17,7 +17,7 @@ use sea_orm::{ConnectionTrait, Statement};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
-use crate::entity::code_sample;
+use crate::entity::{code_sample, project_task_page};
 use crate::handlers::code_samples::record_audit;
 use crate::handlers::system_settings::read_value_or;
 use crate::AppState;
@@ -257,5 +257,230 @@ pub fn spawn_judge_for_sample(state: AppState, sample_id: i32, trigger: &'static
             )),
         )
         .await;
+
+        // 10. 1.4 B.3a · 自动回流：verdict=bad 且 rag.judge.auto_negative_on_bad=true
+        //     → 标 is_negative=true / negative_kind='structural' / status='rejected'
+        //     是反向飞轮的最后一公里：bad 样例自动变反面教材，被 search_negative_samples
+        //     反向召回，不再污染正向召回（search_code_samples 永远过滤 is_negative=FALSE）
+        if verdict == "bad" {
+            let auto_neg = read_value_or(&state, "rag.judge.auto_negative_on_bad", "false")
+                .await
+                .trim()
+                .eq_ignore_ascii_case("true");
+            if auto_neg {
+                if let Ok(Some(s)) = code_sample::Entity::find_by_id(sample_id)
+                    .one(&state.db)
+                    .await
+                {
+                    let old_neg = s.is_negative;
+                    let old_kind = s.negative_kind.clone();
+                    let old_status = s.status.clone();
+                    if !old_neg {
+                        let auto_reason = format!(
+                            "[auto] LLM 评委 verdict=bad → 自动回流：{}",
+                            reason.chars().take(200).collect::<String>()
+                        );
+                        let mut a = s.into_active_model();
+                        a.is_negative = Set(true);
+                        a.negative_kind = Set(Some("structural".to_string()));
+                        a.rejection_reason = Set(Some(auto_reason.clone()));
+                        a.status = Set("rejected".to_string());
+                        a.updated_at = Set(chrono::Utc::now().naive_utc());
+                        match a.update(&state.db).await {
+                            Ok(_) => {
+                                record_audit(
+                                    &state.db,
+                                    sample_id,
+                                    None,
+                                    "system",
+                                    "mark_negative",
+                                    Some(json!({
+                                        "is_negative": old_neg,
+                                        "negative_kind": old_kind,
+                                        "status": old_status,
+                                    })),
+                                    Some(json!({
+                                        "is_negative": true,
+                                        "negative_kind": "structural",
+                                        "status": "rejected",
+                                        "trigger": "auto_negative_on_bad",
+                                    })),
+                                    Some(auto_reason),
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "auto mark_negative {} failed: {}",
+                                    sample_id,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+// ─────────────────────── 1.4 B.3b · page 级评委 ───────────────────────
+
+/// 触发一条 project_task_page 的 LLM 评委（fire-and-forget）。
+///
+/// 与 spawn_judge_for_sample 的差异：
+///   - 评的是 amis JSON 设计本身（与代码无关），不需要拉 full_code
+///   - 复用同一个 mode/budget/semaphore（共享 rag.judge.* 配额）
+///   - 多读一个 `rag.judge.page_mode` 总闸（默认 disabled，独立于 sample mode）
+///   - 结果回填 project_task_page.page_quality_*
+///   - 不写 code_sample_audit（page 级评委是过程指标，不进飞轮历史）
+///
+/// 用途（admin 手动 / scheduler 完成 page 后触发）：
+///   1. 累积「页通过率」评测维度（与 dev_start 成功率交叉验证）
+///   2. bad page 让 admin 决定是否回流为 is_negative=true 的 code_sample（手动操作，不自动）
+///
+/// W3 接通：multipage_scheduler 在 page 完成时 fire-and-forget 调用本函数。
+pub fn spawn_judge_for_page(state: AppState, page_id: i32, trigger: &'static str) {
+    tokio::spawn(async move {
+        // 1. 总闸：page_mode = disabled 时直接 skip（不写 audit，page 级评是过程指标）
+        let mode = read_value_or(&state, "rag.judge.page_mode", "disabled")
+            .await
+            .trim()
+            .to_lowercase();
+        if mode == "disabled" {
+            tracing::debug!("page judge skipped: page_mode=disabled, page_id={}", page_id);
+            return;
+        }
+        // 2. 复用 sample 评委的预算闸（同一个 budget 池，避免双重预算管理）
+        if is_over_budget(&state).await {
+            tracing::warn!("page judge skipped: budget exhausted, page_id={}", page_id);
+            return;
+        }
+
+        // 3. 并发闸
+        let sem = get_semaphore(&state).await;
+        let _permit = match sem.acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!("page judge semaphore closed, page_id={}", page_id);
+                return;
+            }
+        };
+
+        // 4. 读 page + 关联 task 拿技术栈/UI（送评委 prompt 用）
+        let page = match project_task_page::Entity::find_by_id(page_id)
+            .one(&state.db)
+            .await
+        {
+            Ok(Some(p)) => p,
+            _ => {
+                tracing::warn!("page judge: page {} not found", page_id);
+                return;
+            }
+        };
+        let task_opt = crate::entity::project_generation_task::Entity::find_by_id(page.task_id)
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten();
+        let (tech_stack, ui_lib) = task_opt
+            .as_ref()
+            .map(|t| (t.tech_stack.clone(), t.ui_library.clone()))
+            .unwrap_or_default();
+
+        // 5. 挑选模型信息（用于回填 judge_model 字段）
+        let task_type = read_value_or(&state, "rag.judge.task_type", "quality_judge").await;
+        let judge_model = crate::services::llm_selector::select_for_quality_judge(&state)
+            .await
+            .map(|d| d.config.model.clone())
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        // 6. 调 Python /internal/judge-page-schema
+        let agent_url =
+            std::env::var("AGENT_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
+        let internal_key = std::env::var("INTERNAL_API_KEY").unwrap_or_default();
+        let resp = state
+            .http_client
+            .post(format!("{}/internal/judge-page-schema", agent_url))
+            .header("X-Internal-Key", &internal_key)
+            .json(&json!({
+                "page_id": page_id,
+                "task_type": task_type,
+                "route_path": page.route_path,
+                "amis_json": page.amis_json,
+                "tech_stack": tech_stack,
+                "ui_lib": ui_lib,
+            }))
+            .timeout(std::time::Duration::from_secs(90))
+            .send()
+            .await;
+
+        let body: Value = match resp {
+            Ok(r) if r.status().is_success() => match r.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("page judge {} parse body failed: {}", page_id, e);
+                    return;
+                }
+            },
+            Ok(r) => {
+                tracing::warn!("page judge {} non-2xx: {}", page_id, r.status());
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("page judge {} http err: {}", page_id, e);
+                return;
+            }
+        };
+
+        // 7. 规整 verdict + reason（容错 LLM 输出抖动）
+        let verdict_raw = body
+            .get("verdict")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let verdict = match verdict_raw.as_str() {
+            "good" => "good",
+            "needs_review" | "needs review" | "review" => "needs_review",
+            "bad" => "bad",
+            _ => {
+                tracing::warn!(
+                    "page judge {} invalid verdict '{}', skip",
+                    page_id,
+                    verdict_raw
+                );
+                return;
+            }
+        };
+        let reason = body
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(|s| s.chars().take(500).collect::<String>())
+            .unwrap_or_default();
+        let model_used = body
+            .get("model_used")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or(judge_model);
+
+        // 8. 回填 project_task_page.page_quality_*
+        let mut active = page.into_active_model();
+        active.page_quality_verdict = Set(Some(verdict.to_string()));
+        active.page_quality_reason = Set(Some(reason.clone()));
+        active.page_quality_judge_at = Set(Some(chrono::Utc::now().naive_utc()));
+        active.page_quality_judge_model = Set(Some(model_used.clone()));
+        active.updated_at = Set(chrono::Utc::now().naive_utc());
+        if let Err(e) = active.update(&state.db).await {
+            tracing::warn!("page judge {} persist failed: {}", page_id, e);
+            return;
+        }
+
+        tracing::info!(
+            "page judge done: page_id={} verdict={} model={} trigger={}",
+            page_id,
+            verdict,
+            model_used,
+            trigger,
+        );
     });
 }

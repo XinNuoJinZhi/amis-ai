@@ -203,6 +203,17 @@ async fn main() {
         "CREATE INDEX IF NOT EXISTS idx_code_samples_tags        ON code_samples USING GIN (tags)"
     ).await;
 
+    // 1.4 B.1 双路召回：code_samples 加 keyword_index text[] + GIN 索引
+    // 入库时由 Python keyword_extractor 从 amis_json 提关键字（type/subType/api）
+    // 召回时与 query_amis_json 提取的关键字做交集，每命中 +0.06，上限 +0.3
+    let _ = db.execute_unprepared(
+        "ALTER TABLE code_samples
+            ADD COLUMN IF NOT EXISTS keyword_index text[] NOT NULL DEFAULT '{}'"
+    ).await;
+    let _ = db.execute_unprepared(
+        "CREATE INDEX IF NOT EXISTS idx_code_samples_keyword_index ON code_samples USING GIN (keyword_index)"
+    ).await;
+
     // 2026-04 RAG 质量闭环：code_samples 加反馈/评分/评委/负例列（全部可空，幂等）
     //   - thumbs_up/down：admin 双向反馈计数（Phase 1 埋点 only，默认不进 ranking）
     //   - rating / rating_note / rating_by / rating_at：人工 0-5 主观评分（null=未评）
@@ -280,6 +291,14 @@ async fn main() {
          ('rag.judge.task_type',             'quality_judge', 'LLM task_type key（建议绑与 generation 不同 provider 的模型）', NOW()),
          ('rag.judge.budget_per_day',        '50',            '每日 judge 调用上限', NOW()),
          ('rag.judge.batch_concurrency',     '3',             '批量评分并发', NOW()),
+         ('rag.judge.auto_negative_on_bad',  'false',         '1.4 B.3a：评委 verdict=bad 时自动 mark is_negative（默认关闭，admin 评估后开启）', NOW()),
+         ('rag.judge.page_mode',             'disabled',      '1.4 B.3b：page 级评委模式 disabled / manual / auto_on_complete', NOW()),
+         ('llm.routing.category_tier_overrides_json',
+                                              '{\"static_page\":\"fast\",\"data_table\":\"balanced\",\"multipage_dashboard\":\"strong\",\"oa_form\":\"strong\",\"ecommerce\":\"strong\",\"admin_settings\":\"balanced\",\"zc_business\":\"strong\"}',
+                                                              '1.4 A.2：业务类别 → tier 覆盖表（auto 模式按 category 覆盖 score 决策；__other__ 不配则保持原 score 路径）', NOW()),
+         ('llm.quota.enabled',               'false',         '1.4 A.3：总闸 — true 启用用户 token 配额（默认关闭，admin 评估后开启）', NOW()),
+         ('llm.quota.default_daily_budget',  '100000',        '1.4 A.3：用户首次访问时的默认日 token 预算（user_token_quota 行未存在时初始化用）', NOW()),
+         ('llm.quota.over_budget_action',    'downgrade',     '1.4 A.3：超额行为 downgrade（强制 fast 档跑）/ reject（直接 429）', NOW()),
          ('rag.negative.enabled',            'false',         '总闸：RAG 召回是否额外注入负例', NOW()),
          ('rag.negative.top_k',              '1',             '最多注入几条负例', NOW()),
          ('rag.negative.only_structural',    'true',          '仅注入 negative_kind=structural 的（避 LLM negation blindness）', NOW()),
@@ -363,13 +382,43 @@ async fn main() {
             ALTER COLUMN started_at TYPE TIMESTAMP,
             ALTER COLUMN finished_at TYPE TIMESTAMP"
     ).await;
+    // 1.4 B.3b：page 级 LLM 评委结果字段（4 列幂等，全部可空）
+    //   - page_quality_verdict: good / needs_review / bad
+    //   - page_quality_reason: LLM 评委说明（截断 500 字）
+    //   - page_quality_judge_at: 评分时刻
+    //   - page_quality_judge_model: 评分用的模型名
+    let _ = db.execute_unprepared(
+        "ALTER TABLE project_task_page
+            ADD COLUMN IF NOT EXISTS page_quality_verdict  TEXT      NULL,
+            ADD COLUMN IF NOT EXISTS page_quality_reason   TEXT      NULL,
+            ADD COLUMN IF NOT EXISTS page_quality_judge_at TIMESTAMP NULL,
+            ADD COLUMN IF NOT EXISTS page_quality_judge_model TEXT   NULL"
+    ).await;
+    // 高选择性索引：用于查询 bad pages 做评测分析
+    let _ = db.execute_unprepared(
+        "CREATE INDEX IF NOT EXISTS idx_ptp_quality_verdict
+         ON project_task_page(page_quality_verdict) WHERE page_quality_verdict IS NOT NULL"
+    ).await;
 
     // 任务级 LLM 选择 + 供应商能力分档的增量 migration
     let _ = db.execute_unprepared(
         "ALTER TABLE project_generation_task
             ADD COLUMN IF NOT EXISTS llm_mode VARCHAR(16) NOT NULL DEFAULT 'default',
             ADD COLUMN IF NOT EXISTS llm_provider_id INTEGER,
-            ADD COLUMN IF NOT EXISTS llm_model_name TEXT"
+            ADD COLUMN IF NOT EXISTS llm_model_name TEXT,
+            ADD COLUMN IF NOT EXISTS complexity_score    REAL,
+            ADD COLUMN IF NOT EXISTS category            VARCHAR(32),
+            ADD COLUMN IF NOT EXISTS category_confidence REAL,
+            ADD COLUMN IF NOT EXISTS estimated_cost_tokens INT,
+            ADD COLUMN IF NOT EXISTS actual_cost_tokens    INT"
+    ).await;
+    // 1.4 hotfix：早期 build 用了 FLOAT（=FLOAT8/double）但 entity 是 Option<f32>（FLOAT4/REAL），
+    // sqlx decode 时类型不匹配导致并发 task 创建报 500。
+    // ALTER TYPE REAL 把残留 FLOAT8 列降级到 REAL，幂等可重跑。
+    let _ = db.execute_unprepared(
+        "ALTER TABLE project_generation_task
+            ALTER COLUMN complexity_score    TYPE REAL,
+            ALTER COLUMN category_confidence TYPE REAL"
     ).await;
     // 2026-04（性能优化）：为 auto 模式的 30 天历史成功率聚合 SQL + 常规 list_tasks 查询补复合索引
     //   - idx_pgt_user_created_provider：加速 llm_selector::fetch_history_success_rates 的
@@ -394,6 +443,21 @@ async fn main() {
     let _ = db.execute_unprepared(
         "ALTER TABLE users
             ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE"
+    ).await;
+
+    // 1.4 A.3：用户 token 成本预算表
+    //   - 每用户独立配额，默认值从 system_settings 读
+    //   - used_today 在每次 task 创建时累加 estimated_cost_tokens
+    //   - reset_at 过 24h 自动归零（无需 cron，惰性 reset）
+    let _ = db.execute_unprepared(
+        "CREATE TABLE IF NOT EXISTS user_token_quota (
+            user_id       INT       PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            daily_budget  INT       NOT NULL DEFAULT 100000,
+            used_today    INT       NOT NULL DEFAULT 0,
+            reset_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+            created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at    TIMESTAMP NOT NULL DEFAULT NOW()
+        )"
     ).await;
     // 内置 admin 账号补回管理员权限（兼容已有数据库）
     let _ = db.execute_unprepared(

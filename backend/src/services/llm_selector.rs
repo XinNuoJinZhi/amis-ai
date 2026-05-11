@@ -32,6 +32,10 @@ pub struct LlmDecision {
 }
 
 /// 本模块对外的主入口：根据 mode 选出 provider + model。
+///
+/// 1.4 A.2：可选传 `category` + `category_confidence`，让 auto 模式按业务类别覆盖 score 决策
+/// （例如 oa_form → strong，static_page → fast）。category=None 或 confidence<0.5 时保持原逻辑。
+/// 1.4 A.3：可选传 `force_tier`，over_budget 降级时强制锁定档位（如 Some("fast")）。
 pub async fn select_for_task(
     state: &AppState,
     user_id: i32,
@@ -39,11 +43,16 @@ pub async fn select_for_task(
     payload_mode: Option<&str>,
     manual_provider_id: Option<i32>,
     manual_model: Option<&str>,
+    category: Option<&str>,
+    category_confidence: Option<f32>,
+    force_tier: Option<&str>,
 ) -> Result<LlmDecision, String> {
     let mode = payload_mode.unwrap_or("default");
     match mode {
         "manual" => select_manual(state, manual_provider_id, manual_model).await,
-        "auto" => decide_auto(state, user_id, amis_json).await,
+        "auto" => {
+            decide_auto(state, user_id, amis_json, category, category_confidence, force_tier).await
+        }
         _ => select_default(state).await,
     }
 }
@@ -53,8 +62,10 @@ pub async fn preview_auto(
     state: &AppState,
     user_id: i32,
     amis_json: &str,
+    category: Option<&str>,
+    category_confidence: Option<f32>,
 ) -> Result<LlmDecision, String> {
-    decide_auto(state, user_id, amis_json).await
+    decide_auto(state, user_id, amis_json, category, category_confidence, None).await
 }
 
 // ============================================================
@@ -198,9 +209,57 @@ async fn decide_auto(
     state: &AppState,
     user_id: i32,
     amis_json: &str,
+    category: Option<&str>,
+    category_confidence: Option<f32>,
+    force_tier: Option<&str>,
 ) -> Result<LlmDecision, String> {
     let score = score_amis_complexity(amis_json);
-    let target_tier = tier_from_score(score);
+    let mut target_tier = tier_from_score(score);
+
+    // 1.4 A.2：category override
+    // 读 system_settings.llm.routing.category_tier_overrides_json，按 category 命中覆盖 tier
+    // 置信度 < 0.5 时不参与（信号不足）；命中 __other__ / 未配置时保持原 score 决策
+    let mut override_applied: Option<(String, String)> = None; // (category, override_tier)
+    if let (Some(cat), Some(conf)) = (category, category_confidence) {
+        if conf >= 0.5 && cat != "__other__" {
+            let raw = crate::handlers::system_settings::read_value_or(
+                state,
+                "llm.routing.category_tier_overrides_json",
+                "{}",
+            )
+            .await;
+            if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&raw) {
+                if let Some(override_tier) = map.get(cat) {
+                    if !override_tier.is_empty() && override_tier != &target_tier {
+                        override_applied =
+                            Some((cat.to_string(), override_tier.clone()));
+                        target_tier = match override_tier.as_str() {
+                            "fast" => "fast",
+                            "balanced" => "balanced",
+                            "strong" => "strong",
+                            "frontier" => "frontier",
+                            _ => target_tier, // 容错：非法值不覆盖
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    // 1.4 A.3：force_tier override（quota over_budget 时降级 fast）
+    // 优先级最高，覆盖 score + category override
+    if let Some(forced) = force_tier {
+        match forced {
+            "fast" | "balanced" | "strong" | "frontier" => {
+                if forced != target_tier {
+                    override_applied =
+                        Some(("quota_force".to_string(), forced.to_string()));
+                    target_tier = forced;
+                }
+            }
+            _ => {} // 容错：非法值忽略
+        }
+    }
 
     let providers: Vec<llm_provider::Model> = llm_provider::Entity::find()
         .filter(llm_provider::Column::IsActive.eq(true))
@@ -249,10 +308,15 @@ async fn decide_auto(
     })?;
 
     let success_rate = history.get(&best.id).copied();
+    let override_note = match override_applied {
+        Some((cat, override_tier)) => format!(", override(category={}→{})", cat, override_tier),
+        None => String::new(),
+    };
     let reason = format!(
-        "auto: complexity={:.1}, target_tier={}, picked={}({}), history_sr={}",
+        "auto: complexity={:.1}, target_tier={}{}, picked={}({}), history_sr={}",
         score,
         target_tier,
+        override_note,
         best.name,
         best.capability_tier,
         success_rate.map(|r| format!("{:.2}", r)).unwrap_or_else(|| "无历史".to_string()),

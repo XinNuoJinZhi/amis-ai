@@ -13,3 +13,4 @@ pub mod system_setting;
 pub mod skill_authoring_session;
 pub mod conversation_session;
 pub mod conversation_message;
+pub mod user_token_quota;

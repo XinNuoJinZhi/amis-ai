@@ -121,6 +121,10 @@ cd agent && uv run uvicorn src.main:app --reload --port 8000
 | [2026-04-27-conversation-streaming.md](docs/upgrades/2026-04-27-conversation-streaming.md) | 通用 AI 对话：SSE 流式打字机 + 多会话 DB 持久化（左侧会话栏 / 重命名 / 删除） |
 | [2026-05-07-amis-knowledge-completion.md](docs/upgrades/2026-05-07-amis-knowledge-completion.md) | 1.1.0 · Amis 知识双轨补全（175 schema + 148 RAG 样例 + 100% embedding；接受 0pp delta + 上线 thumbs 兜底） |
 | [2026-05-09-multipage-reverse-flywheel-1.2.md](docs/upgrades/2026-05-09-multipage-reverse-flywheel-1.2.md) | 1.2.0 · 多页面反向飞轮 + 5 策略评测矩阵（**R4/R2/R1/R3/Unified 全 GA**；3 prompts × 5 策略 = 15 任务全 succeeded；6 个 P0 issue 全修；最终评测 30min） |
+| [2026-05-11-zc-amis-1.3-stage-c.md](docs/upgrades/2026-05-11-zc-amis-1.3-stage-c.md) | 1.3.0 · ZC Amis Web 端阶段 C（zc-editor-web-template + zc-web-node20 镜像） |
+| [2026-05-11-zc-amis-1.3-stage-d-e.md](docs/upgrades/2026-05-11-zc-amis-1.3-stage-d-e.md) | 1.3.0 · 阶段 D/E（ZC Web 出码 + 9 prompts 评测） |
+| [2026-05-11-zc-amis-1.3.1-mobile.md](docs/upgrades/2026-05-11-zc-amis-1.3.1-mobile.md) | 1.3.1 · ZC 智搭小程序底座 + 反向飞轮支持出码 |
+| [2026-05-12-llm-routing-rag-quality-vue3.md](docs/upgrades/2026-05-12-llm-routing-rag-quality-vue3.md) | 1.4.0 · LLM 路由智能化（category × tier 偏置 + token 配额 + actual_cost）+ RAG 质量收口（双路召回 + 负例 + page 评委）+ Vue3 模板（**16 commits，v4 三组 100% 通过**） |
 
 ### 规范与清单
 

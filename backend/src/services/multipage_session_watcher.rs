@@ -124,18 +124,16 @@ pub async fn wait_session_completed(
 }
 
 async fn persist_event(db: &sea_orm::DatabaseConnection, task_id: i32, json_text: &str) {
-    let event_type = match serde_json::from_str::<serde_json::Value>(json_text) {
-        Ok(v) => v
-            .get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("unknown")
-            .to_string(),
-        Err(_) => "raw".to_string(),
-    };
+    let parsed = serde_json::from_str::<serde_json::Value>(json_text).ok();
+    let event_type = parsed
+        .as_ref()
+        .and_then(|v| v.get("type").and_then(|t| t.as_str()))
+        .unwrap_or("unknown")
+        .to_string();
 
     let record = project_task_event::ActiveModel {
         task_id: Set(task_id),
-        event_type: Set(event_type),
+        event_type: Set(event_type.clone()),
         payload: Set(json_text.to_string()),
         created_at: Set(Utc::now().naive_utc()),
         ..Default::default()
@@ -147,5 +145,42 @@ async fn persist_event(db: &sea_orm::DatabaseConnection, task_id: i32, json_text
             task_id,
             e
         );
+    }
+
+    // 1.4 W4 actual_cost：llm_call_snapshot 收到时累加 usage 到 task.actual_cost_tokens
+    // response_events[*].type=="usage" 含 input_tokens / output_tokens（由 openai_stream/api_bridge 注入）
+    if event_type == "llm_call_snapshot" {
+        if let Some(v) = parsed {
+            let resp_events = v.pointer("/data/response_events").and_then(|x| x.as_array());
+            if let Some(arr) = resp_events {
+                let mut total: i64 = 0;
+                for e in arr {
+                    if e.get("type").and_then(|t| t.as_str()) == Some("usage") {
+                        let it = e.get("input_tokens").and_then(|n| n.as_i64()).unwrap_or(0);
+                        let ot = e.get("output_tokens").and_then(|n| n.as_i64()).unwrap_or(0);
+                        total += it + ot;
+                    }
+                }
+                if total > 0 {
+                    // 原子累加：COALESCE 处理 NULL 初始值
+                    let sql = format!(
+                        "UPDATE project_generation_task SET actual_cost_tokens = COALESCE(actual_cost_tokens, 0) + {} WHERE id = {}",
+                        total, task_id
+                    );
+                    use sea_orm::{ConnectionTrait, Statement};
+                    if let Err(e) = db
+                        .execute(Statement::from_string(db.get_database_backend(), sql))
+                        .await
+                    {
+                        tracing::warn!(
+                            "actual_cost 累加失败 task={} tokens={}: {}",
+                            task_id,
+                            total,
+                            e
+                        );
+                    }
+                }
+            }
+        }
     }
 }

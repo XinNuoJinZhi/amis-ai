@@ -1,0 +1,6 @@
+prompt_id,prompt_title,page_count,strategy,execution_strategy,reuse_strategy,runner_wall_sec,task_id,task_status,pages_done,pages_total,pass_rate,reuse_rate,import_count,file_count,llm_calls,llm_total_ms,total_dur_sec,rag_ok
+zc_p1_user_directory_3pages,ZC 用户与部门管理三页（列表+详情+编辑）,3,r4_baseline,isolated,r4_none,30.8,249,succeeded,3,3,1.0,0.0,0,3,30,36426,16,True
+zc_p2_dashboard_4pages,ZC 后台仪表盘四页（首页+报表+订单 CRUD+客户档案）,4,r4_baseline,isolated,r4_none,32.9,250,succeeded,4,4,1.0,0.0,0,4,41,56223,25,True
+zc_p4_oa_workflow_3pages,ZC OA 工作流三页（启动+流转+我的待办）,3,r4_baseline,isolated,r4_none,30.7,251,succeeded,3,3,1.0,0.0,0,3,29,55139,27,True
+zc_p5_oa_dept_3pages,ZC OA 组织架构三页（部门树+人员+角色权限）,3,r4_baseline,isolated,r4_none,30.8,252,succeeded,3,3,1.0,0.0,0,3,26,43962,17,True
+zc_p3_workorder_3pages,ZC 工单 CRUD 三页（列表+详情+动态表单提交）,3,r4_baseline,isolated,r4_none,31.2,253,succeeded,3,3,1.0,0.0,0,3,28,46865,21,True

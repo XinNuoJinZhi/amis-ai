@@ -5,6 +5,7 @@ kind: stack
 platforms: [mobile]
 tech_stacks: [uniapp]
 requires: [_common, platform-mobile]
+conflicts: [stack-rn]
 priority: 50
 ---
 

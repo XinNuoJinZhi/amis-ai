@@ -1,4 +1,10 @@
-"""RAG Pipeline — pgvector 向量检索 + 混合查询"""
+"""RAG Pipeline — pgvector 向量检索 + 混合查询
+
+1.4 B.1：在原有"向量检索 + 多维标签硬过滤"之上叠加**关键字精确召回**，
+两路结果用 RRF（Reciprocal Rank Fusion）融合排序。
+关键字来自 code_samples.keyword_index 列（GIN 索引），入库时由
+keyword_extractor.extract_amis_keywords 从 full_amis_json 提取。
+"""
 
 import hashlib
 import json
@@ -7,6 +13,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .db import get_pool
 from .embedding import get_embedding
+from .keyword_extractor import extract_amis_keywords
 
 
 # ────────────────────────── 2026-04 性能缓存 ──────────────────────────
@@ -174,6 +181,9 @@ async def index_code_sample(
 ) -> bool:
     """把 code_samples 表里某条记录的 summary 向量化并写回 embedding 列。
 
+    1.4 B.1：同时从该样例的 full_amis_json 提取关键字写回 keyword_index 列。
+    提取失败不阻断 embedding 入库（keyword_index 保持 '{}'，召回退化为纯向量）。
+
     Args:
         sample_id: code_samples.id（backend 已经 INSERT 完成行，传 ID 过来）
         summary_text: 用于向量化的文本（通常是 amis_json_summary + code_summary 拼接）
@@ -185,15 +195,32 @@ async def index_code_sample(
     try:
         embedding = await get_embedding(summary_text)
         embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+
+        # B.1：从 DB 读 full_amis_json 提关键字（避免要求 backend 也传 amis_json，减少接口面）
+        keywords: List[str] = []
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT full_amis_json FROM code_samples WHERE id = $1",
+                    sample_id,
+                )
+            if row and row["full_amis_json"]:
+                keywords = extract_amis_keywords(row["full_amis_json"])
+        except Exception as ke:
+            # 关键字提取失败不阻断 embedding 入库
+            print(f"[RAG] keyword 提取失败 sample_id={sample_id}: {ke}")
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE code_samples
                 SET embedding = $1::vector,
+                    keyword_index = $2::text[],
                     updated_at = NOW()
-                WHERE id = $2
+                WHERE id = $3
                 """,
                 embedding_str,
+                keywords,
                 sample_id,
             )
         return True
@@ -227,8 +254,10 @@ async def search_code_samples(
     multipage_filter: bool = False,
     execution_strategy: Optional[str] = None,    # 'isolated' / 'unified' / None
     reuse_strategy: Optional[str] = None,        # 'r1_skeleton' / 'r2_prompt' / 'r3_refactor' / 'r4_none' / None
+    # 1.4 B.1 双路召回：用户当前任务的 amis_json，内部提关键字与 keyword_index 做精确匹配
+    query_amis_json: Optional[str] = None,
 ) -> List[dict]:
-    """检索相似的 code_sample（2026-04 起支持质量闭环可配置过滤 + 加权）。
+    """检索相似的 code_sample（2026-04 起支持质量闭环可配置过滤 + 加权；1.4 加 keyword 双路召回）。
 
     设计要点：
       - **硬过滤**（WHERE 子句）：exclude_tags / min_rating / min_verdict / only_approved
@@ -238,9 +267,13 @@ async def search_code_samples(
           boost 模式     → thumbs 加 0.2（慎用，N=3 admin 时易偏见主导）
           hit_count     → ln(1+hit/10) * 0.1
       - 维度命中保持原 tag_boost 0.3 / 0.1 逻辑
+      - **1.4 keyword_boost**：query_amis_json 非空 → 提关键字（type/subType/api）与
+        code_samples.keyword_index 做交集，每命中一个关键字加 0.06，上限 0.3
+        反向兼容：query_amis_json 为空 → kw_overlap 一直 0，等价于现有逻辑
 
     返回:
-        [{id, ..., similarity, tag_boost, thumbs_boost, hit_boost, score}]
+        [{id, ..., similarity, tag_boost, thumbs_boost, hit_boost, keyword_boost,
+          keyword_hits, score}]
         按 score 降序
     """
     # 1.2.0 多页 strategy 白名单校验（防 SQL 注入）
@@ -266,6 +299,10 @@ async def search_code_samples(
     ui_libs = ui_libs or []
     exclude_tags = exclude_tags or []
     any_dim = bool(platforms or tech_stacks or ui_libs or legacy_tech_stack)
+
+    # 1.4 B.1：从 query_amis_json 提关键字（type/subType/api），与样例 keyword_index 做交集
+    # 空数组时 CARDINALITY(...) 永远 0，keyword_boost = 0，等价于现有逻辑
+    query_keywords: List[str] = extract_amis_keywords(query_amis_json) if query_amis_json else []
 
     where_status = "AND status = 'approved'" if only_approved else ""
     # 维度过滤（若任一数组非空，则必须至少命中一个；全为空 → 不过滤，退化为纯向量检索）
@@ -336,12 +373,12 @@ async def search_code_samples(
         hit_boost_expr = "0"
 
     # 参数占位：$1=embedding, $2=top_k, $3-5=三组维度数组, $6=legacy_stack,
-    #          $7=exclude_tags, $8=min_rating, $9=min_verdict_rank
+    #          $7=exclude_tags, $8=min_rating, $9=min_verdict_rank, $10=query_keywords (1.4 B.1)
     # 不传的参数用固定值传入（SQL 自动短路），避免分支 SQL 字符串
     query = f"""
         WITH scored AS (
             SELECT id, tech_stack, source_team,
-                   platforms, tech_stacks, ui_libs, tags,
+                   platforms, tech_stacks, ui_libs, tags, keyword_index,
                    amis_json_summary, code_summary,
                    full_amis_json, full_code, hit_count,
                    thumbs_up, thumbs_down, rating, quality_verdict,
@@ -356,7 +393,14 @@ async def search_code_samples(
                      ELSE 0.0
                    END AS tag_boost,
                    ({thumbs_boost_expr}) AS thumbs_boost,
-                   ({hit_boost_expr}) AS hit_boost
+                   ({hit_boost_expr}) AS hit_boost,
+                   -- 1.4 B.1：keyword_index 与 query 关键字交集大小
+                   -- query_keywords 空时 UNNEST({{}}) 空，INTERSECT 永远空集，结果 0
+                   CARDINALITY(ARRAY(
+                       SELECT UNNEST(keyword_index)
+                       INTERSECT
+                       SELECT UNNEST($10::text[])
+                   )) AS kw_overlap
             FROM code_samples
             WHERE embedding IS NOT NULL
               {where_status}
@@ -364,7 +408,11 @@ async def search_code_samples(
               {where_quality}
               {where_multipage}
         )
-        SELECT *, cos_sim + tag_boost + thumbs_boost + hit_boost AS score
+        SELECT *,
+               -- 1.4 B.1：keyword 每命中 1 个加 0.06，上限 0.3（相当于全维度 tag_boost）
+               LEAST(0.3, 0.06 * kw_overlap) AS keyword_boost,
+               cos_sim + tag_boost + thumbs_boost + hit_boost
+                 + LEAST(0.3, 0.06 * kw_overlap) AS score
         FROM scored
         ORDER BY score DESC
         LIMIT $2
@@ -381,6 +429,7 @@ async def search_code_samples(
             exclude_tags,                   # $7
             min_rating,                     # $8 None 时 SQL 短路成 TRUE
             verdict_rank,                   # $9 同上
+            query_keywords,                 # $10 1.4 B.1：空数组时 keyword_boost = 0
         )
 
     results = []
@@ -393,6 +442,7 @@ async def search_code_samples(
             "tech_stacks": list(row["tech_stacks"] or []),
             "ui_libs": list(row["ui_libs"] or []),
             "tags": list(row["tags"] or []),
+            "keyword_index": list(row["keyword_index"] or []),
             "amis_json_summary": row["amis_json_summary"],
             "code_summary": row["code_summary"],
             "full_amis_json": row["full_amis_json"],
@@ -406,6 +456,8 @@ async def search_code_samples(
             "tag_boost": row["tag_boost"] or 0.0,
             "thumbs_boost": row["thumbs_boost"] or 0.0,
             "hit_boost": row["hit_boost"] or 0.0,
+            "keyword_boost": row["keyword_boost"] or 0.0,
+            "keyword_hits": int(row["kw_overlap"] or 0),
             "score": row["score"] or 0.0,
         })
     return results

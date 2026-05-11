@@ -199,14 +199,120 @@ pub async fn create_task(
         }
     };
 
+    // -0.75. 1.4 W4 修：多页任务 runner 传 amis_json="{}"，真实结构在 pages[].amis_json。
+    //   合并所有 page 的 amis_json 成 {"type":"page","body":[...page1,page2...]} 供:
+    //     - 分类器（A.1 category）
+    //     - 复杂度评分（A.2 score → tier）
+    //     - 成本预估（A.3 estimate）
+    //   单页 / 无 pages：直接用 payload.amis_json
+    let amis_for_analysis: String = match payload.pages.as_ref() {
+        Some(pages) if !pages.is_empty() => {
+            let body: Vec<serde_json::Value> = pages
+                .iter()
+                .map(|p| {
+                    serde_json::from_str::<serde_json::Value>(&p.amis_json)
+                        .unwrap_or_else(|_| serde_json::json!({}))
+                })
+                .collect();
+            serde_json::json!({"type": "page", "body": body}).to_string()
+        }
+        _ => payload.amis_json.clone(),
+    };
+
+    // -0.5. 1.4 A.1：调 Python 分类器拿 category + confidence（fire-and-wait，但调 chat 快）
+    //   失败/超时不阻断 → 走 None，select_for_task 退化为纯 score 决策
+    //   全局 max 3s timeout，避免拖累 create_task 首屏响应
+    let (task_category, task_category_confidence): (Option<String>, Option<f32>) = {
+        let agent_url =
+            std::env::var("AGENT_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
+        let internal_key = std::env::var("INTERNAL_API_KEY").unwrap_or_default();
+        let resp = state
+            .http_client
+            .post(format!("{}/internal/classify-task-category", agent_url))
+            .header("X-Internal-Key", &internal_key)
+            .json(&json!({
+                "amis_json": amis_for_analysis,
+                "extra_prompt": payload.extra_prompt,
+            }))
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+            .await;
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                match r.json::<serde_json::Value>().await {
+                    Ok(v) if v.get("ok").and_then(|x| x.as_bool()) == Some(true) => {
+                        let cat = v.get("category").and_then(|x| x.as_str()).map(String::from);
+                        let conf = v.get("confidence").and_then(|x| x.as_f64()).map(|f| f as f32);
+                        (cat, conf)
+                    }
+                    _ => (None, None),
+                }
+            }
+            _ => (None, None),
+        }
+    };
+
+    // -0.25. 1.4 A.3：成本预算检查
+    //   - 估算 cost（粗粒度公式，单位 token）
+    //   - 调 check_and_consume_quota 预扣
+    //   - reject 模式超额 → 直接返回 429
+    //   - downgrade 模式超额 → 设 force_tier="fast"，select_for_task 强制锁档
+    let estimated_cost = crate::services::quota::estimate_task_cost(
+        &amis_for_analysis,
+        payload.extra_prompt.as_deref(),
+        None, // complexity_score 由 LLM 决策时算，这里粗估即可
+    );
+    let quota_decision = match crate::services::quota::check_and_consume_quota(
+        &state,
+        user.id,
+        estimated_cost,
+    )
+    .await
+    {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("quota check 失败（放行）: {}", e);
+            // 配额服务异常时不阻断主流程（fail-open，避免误伤）
+            crate::services::quota::QuotaDecision {
+                over_budget: false,
+                reject: false,
+                used_today: 0,
+                daily_budget: 0,
+                reason: format!("quota service error (fail-open): {}", e),
+            }
+        }
+    };
+    if quota_decision.reject {
+        return (
+            StatusCode::from_u16(429).unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+            Json(json!({
+                "error": "今日 token 预算已用完",
+                "used_today": quota_decision.used_today,
+                "daily_budget": quota_decision.daily_budget,
+                "reason": quota_decision.reason,
+            })),
+        )
+            .into_response();
+    }
+    let force_tier: Option<&str> = if quota_decision.over_budget {
+        Some("fast") // downgrade：强制 fast 档
+    } else {
+        None
+    };
+
     // 0. 先决策本次任务用哪个 LLM（manual / auto / default）
+    //    1.4 A.2：把 category + confidence 传入，auto 模式按 category 偏置覆盖 tier 决策
+    //    1.4 A.3：传 force_tier，over_budget 时强制 fast 降级
     let decision = match llm_selector::select_for_task(
         &state,
         user.id,
-        &payload.amis_json,
+        &amis_for_analysis,
         payload.llm_mode.as_deref(),
         payload.llm_provider_id,
         payload.llm_model_name.as_deref(),
+        task_category.as_deref(),
+        task_category_confidence,
+        force_tier,
     )
     .await
     {
@@ -254,6 +360,13 @@ pub async fn create_task(
         execution_strategy: Set(payload.execution_strategy.clone()),
         reuse_strategy: Set(payload.reuse_strategy.clone()),
         page_count: Set(payload.pages.as_ref().map(|p| p.len() as i32).unwrap_or(1)),
+        // 1.4 A.1：分类器结果 + complexity_score 持久化（便于路由分析 / B.4 评测分桶）
+        complexity_score: Set(decision.complexity_score),
+        category: Set(task_category.clone()),
+        category_confidence: Set(task_category_confidence),
+        // 1.4 A.3：成本预算字段
+        estimated_cost_tokens: Set(Some(estimated_cost)),
+        actual_cost_tokens: Set(None), // W4 接 LLM response usage 字段时填
         ..Default::default()
     };
 
@@ -1347,7 +1460,9 @@ pub async fn llm_preview(
         Err(e) => return e.into_response(),
     };
 
-    match llm_selector::preview_auto(&state, user.id, &payload.amis_json).await {
+    // 1.4 A.2：preview_auto 也支持 category override，但 preview 阶段还未跑分类器，
+    // 这里传 None — 前端预览看到的是基线 score 决策；正式 create_task 时会带 category。
+    match llm_selector::preview_auto(&state, user.id, &payload.amis_json, None, None).await {
         Ok(d) => preview_to_json(&d).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -1694,6 +1809,9 @@ async fn fetch_rag_extra_sections(
 
     // amis_json 太长会拖慢向量化；摘要用前 2KB 就够语义检索了
     let query_text: String = amis_json.chars().take(2000).collect();
+    // 1.4 B.1 双路召回：提关键字需要完整 JSON 结构（type/subType/api 散布各处），
+    // 取前 32KB（足够覆盖多页项目；超过部分截断不影响主结构提取）
+    let query_amis_json: String = amis_json.chars().take(32768).collect();
 
     // 读 rag.* 配置（硬过滤 + 软加权 knob）。读失败走 default，不阻断主流程。
     use crate::handlers::system_settings::read_value_or;
@@ -1731,6 +1849,7 @@ async fn fetch_rag_extra_sections(
             "ui_libs": &ui_libs,
             "tech_stack": &legacy_tech_stack,
             "query_text": query_text,
+            "query_amis_json": query_amis_json,  // 1.4 B.1 双路召回
             "top_k": 3,
             "only_approved": true,
             "increment_hits": true,

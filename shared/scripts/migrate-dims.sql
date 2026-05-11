@@ -47,6 +47,12 @@ CREATE INDEX IF NOT EXISTS idx_code_samples_tech_stacks ON code_samples USING GI
 CREATE INDEX IF NOT EXISTS idx_code_samples_ui_libs     ON code_samples USING GIN (ui_libs);
 CREATE INDEX IF NOT EXISTS idx_code_samples_tags        ON code_samples USING GIN (tags);
 
+-- 1.4 B.1：keyword_index 列 + GIN（双路召回的精确侧；入库时由
+-- agent/src/services/keyword_extractor.py 从 amis_json 提取 type/subType/api 关键字）
+ALTER TABLE code_samples
+  ADD COLUMN IF NOT EXISTS keyword_index text[] NOT NULL DEFAULT '{}';
+CREATE INDEX IF NOT EXISTS idx_code_samples_keyword_index ON code_samples USING GIN (keyword_index);
+
 -- project_generation_task 加多维字段
 ALTER TABLE project_generation_task
   ADD COLUMN IF NOT EXISTS platform               VARCHAR(32) NOT NULL DEFAULT 'mobile',
@@ -76,10 +82,12 @@ DROP INDEX IF EXISTS idx_code_samples_platforms;
 DROP INDEX IF EXISTS idx_code_samples_tech_stacks;
 DROP INDEX IF EXISTS idx_code_samples_ui_libs;
 DROP INDEX IF EXISTS idx_code_samples_tags;
+DROP INDEX IF EXISTS idx_code_samples_keyword_index;
 ALTER TABLE code_samples DROP COLUMN IF EXISTS platforms;
 ALTER TABLE code_samples DROP COLUMN IF EXISTS tech_stacks;
 ALTER TABLE code_samples DROP COLUMN IF EXISTS ui_libs;
 ALTER TABLE code_samples DROP COLUMN IF EXISTS tags;
+ALTER TABLE code_samples DROP COLUMN IF EXISTS keyword_index;
 
 -- project_generation_task
 ALTER TABLE project_generation_task DROP COLUMN IF EXISTS platform;
