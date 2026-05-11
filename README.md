@@ -159,6 +159,10 @@ SKILLS_PLUGIN_PATHS=/opt/zc-amis-skills,/opt/another-pack \
 - [2026-04-22 · Skills 知识层 + RAG 飞轮 + 插件机制](docs/upgrades/2026-04-22-knowledge-rag-plugins.md)
 - [2026-04-22 · AI 辅助 Skill 起草（Synthetic Honey）](docs/upgrades/2026-04-22-synthetic-honey.md)
 - [2026-04-25 · RAG 质量闭环（评分 / 负例 / 审核可视化）](docs/upgrades/2026-04-25-rag-quality-loop.md)
+- [2026-05-07 · 1.1.0 · Amis 知识双轨补全](docs/upgrades/2026-05-07-amis-knowledge-completion.md)
+- [2026-05-09 · 1.2.0 · 多页面反向飞轮 + 5 策略评测矩阵](docs/upgrades/2026-05-09-multipage-reverse-flywheel-1.2.md)
+- [2026-05-11 · 1.3.x · ZC Amis 智搭扩展（Web + 小程序）](docs/upgrades/2026-05-11-zc-amis-1.3-stage-c.md)
+- [2026-05-12 · 1.4.0 · LLM 路由智能化 + RAG 质量收口 + Vue3 模板](docs/upgrades/2026-05-12-llm-routing-rag-quality-vue3.md)
 
 ### 规范与清单
 
