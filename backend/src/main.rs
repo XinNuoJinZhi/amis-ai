@@ -406,11 +406,19 @@ async fn main() {
             ADD COLUMN IF NOT EXISTS llm_mode VARCHAR(16) NOT NULL DEFAULT 'default',
             ADD COLUMN IF NOT EXISTS llm_provider_id INTEGER,
             ADD COLUMN IF NOT EXISTS llm_model_name TEXT,
-            ADD COLUMN IF NOT EXISTS complexity_score    FLOAT,
+            ADD COLUMN IF NOT EXISTS complexity_score    REAL,
             ADD COLUMN IF NOT EXISTS category            VARCHAR(32),
-            ADD COLUMN IF NOT EXISTS category_confidence FLOAT,
+            ADD COLUMN IF NOT EXISTS category_confidence REAL,
             ADD COLUMN IF NOT EXISTS estimated_cost_tokens INT,
             ADD COLUMN IF NOT EXISTS actual_cost_tokens    INT"
+    ).await;
+    // 1.4 hotfix：早期 build 用了 FLOAT（=FLOAT8/double）但 entity 是 Option<f32>（FLOAT4/REAL），
+    // sqlx decode 时类型不匹配导致并发 task 创建报 500。
+    // ALTER TYPE REAL 把残留 FLOAT8 列降级到 REAL，幂等可重跑。
+    let _ = db.execute_unprepared(
+        "ALTER TABLE project_generation_task
+            ALTER COLUMN complexity_score    TYPE REAL,
+            ALTER COLUMN category_confidence TYPE REAL"
     ).await;
     // 2026-04（性能优化）：为 auto 模式的 30 天历史成功率聚合 SQL + 常规 list_tasks 查询补复合索引
     //   - idx_pgt_user_created_provider：加速 llm_selector::fetch_history_success_rates 的
