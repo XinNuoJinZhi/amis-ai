@@ -579,6 +579,7 @@ async fn run_isolated_pages_with_shared_context(
         task.category.as_deref(),         // 1.4 A.2：复用 task 已分类的 category
         task.category_confidence,
         None,                              // force_tier：复用路径不再走 quota（额度已在 create_task 扣过）
+        task.ab_variant.as_deref(),        // 1.5 W3：复用 task 已分桶的 ab_variant
     )
     .await
     .map_err(|e| SchedulerError::ClawAgent(format!("llm_selector 失败: {e}")))?;
@@ -803,6 +804,7 @@ async fn build_stage_request(
         task.category.as_deref(),         // 1.4 A.2
         task.category_confidence,
         None,                              // force_tier：复用路径
+        task.ab_variant.as_deref(),        // 1.5 W3：复用 task 已分桶的 variant
     )
     .await
     .map_err(|e| SchedulerError::ClawAgent(format!("llm_selector 失败: {e}")))?;

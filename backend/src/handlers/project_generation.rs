@@ -219,9 +219,10 @@ pub async fn create_task(
         _ => payload.amis_json.clone(),
     };
 
-    // -0.5. 1.4 A.1：调 Python 分类器拿 category + confidence（fire-and-wait，但调 chat 快）
+    // -0.5. 1.4 A.1 / 1.5 W1.1：调 Python 分类器拿 category + confidence（fire-and-wait，但调 chat 快）
     //   失败/超时不阻断 → 走 None，select_for_task 退化为纯 score 决策
-    //   全局 max 3s timeout，避免拖累 create_task 首屏响应
+    //   1.5 W1.1：3s → 5s timeout，避免偶发慢 LLM 让 task 258/259/238 退化为空 category
+    //   （agent 端 classify_task_category_endpoint 内部已加 1 次重试，双保险）
     let (task_category, task_category_confidence): (Option<String>, Option<f32>) = {
         let agent_url =
             std::env::var("AGENT_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
@@ -234,7 +235,7 @@ pub async fn create_task(
                 "amis_json": amis_for_analysis,
                 "extra_prompt": payload.extra_prompt,
             }))
-            .timeout(std::time::Duration::from_secs(3))
+            .timeout(std::time::Duration::from_secs(5))
             .send()
             .await;
         match resp {
@@ -252,16 +253,19 @@ pub async fn create_task(
         }
     };
 
-    // -0.25. 1.4 A.3：成本预算检查
-    //   - 估算 cost（粗粒度公式，单位 token）
+    // -0.25. 1.4 A.3 / 1.5 W2：成本预算检查
+    //   - 1.5 W2 estimate 校准：优先用 category 历史中位数（≥10 样本），fallback 粗估 × 校准系数 200
     //   - 调 check_and_consume_quota 预扣
     //   - reject 模式超额 → 直接返回 429
     //   - downgrade 模式超额 → 设 force_tier="fast"，select_for_task 强制锁档
-    let estimated_cost = crate::services::quota::estimate_task_cost(
+    let estimated_cost = crate::services::quota::estimate_task_cost_calibrated(
+        &state,
         &amis_for_analysis,
         payload.extra_prompt.as_deref(),
-        None, // complexity_score 由 LLM 决策时算，这里粗估即可
-    );
+        None, // complexity_score 由 LLM 决策时算，这里 None 让函数取均值 20
+        task_category.as_deref(),
+    )
+    .await;
     let quota_decision = match crate::services::quota::check_and_consume_quota(
         &state,
         user.id,
@@ -303,6 +307,8 @@ pub async fn create_task(
     // 0. 先决策本次任务用哪个 LLM（manual / auto / default）
     //    1.4 A.2：把 category + confidence 传入，auto 模式按 category 偏置覆盖 tier 决策
     //    1.4 A.3：传 force_tier，over_budget 时强制 fast 降级
+    //    1.5 W3：A/B 分桶决策（feature flag 关时统一 None）
+    let ab_variant = compute_ab_variant(&state, user.id).await;
     let decision = match llm_selector::select_for_task(
         &state,
         user.id,
@@ -313,6 +319,7 @@ pub async fn create_task(
         task_category.as_deref(),
         task_category_confidence,
         force_tier,
+        ab_variant.as_deref(),
     )
     .await
     {
@@ -364,9 +371,12 @@ pub async fn create_task(
         complexity_score: Set(decision.complexity_score),
         category: Set(task_category.clone()),
         category_confidence: Set(task_category_confidence),
-        // 1.4 A.3：成本预算字段
+        // 1.4 A.3 / 1.5 W1.2：成本预算字段
         estimated_cost_tokens: Set(Some(estimated_cost)),
-        actual_cost_tokens: Set(None), // W4 接 LLM response usage 字段时填
+        actual_cost_tokens: Set(None),      // 1.5 W1.2 语义改：当前 attempt 成本
+        accumulated_cost_tokens: Set(None), // 1.5 W1.2 新：全部 attempt 累计
+        // 1.5 W3 B：A/B 分桶（feature flag 关时 None；开启时按 user_id 稳定分桶）
+        ab_variant: Set(ab_variant.clone()),
         ..Default::default()
     };
 
@@ -419,6 +429,8 @@ pub async fn create_task(
     //   - 本线程接着 await sandbox 创建；sandbox 返回 workdir 后再做 scaffold 复制
     //   - 最终在拼 claw_req 前 `rag_fut.await` 收结果
     //   典型收益：sandbox 1–5s 与 RAG 0.5–3s 重叠，尾延迟压缩 0.5–3s。
+    // 1.5 W4 fix：多页任务 payload.amis_json 是空 `{}`，真 amis 在 payload.pages[]；
+    //   改用 amis_for_analysis（多页合并后的整体 JSON），让 B.1 keyword 提取在多页路径下也能工作
     let rag_fut = tokio::spawn(fetch_rag_extra_sections(
         state.clone(),
         task_id,
@@ -426,7 +438,7 @@ pub async fn create_task(
         tech_stacks_arr.clone(),
         ui_libs_arr.clone(),
         tech_stack.clone(),
-        payload.amis_json.clone(),
+        amis_for_analysis.clone(),
     ));
 
     // 2. 拉起 sandbox（2026-04：dev_command；1.3：+ image，按模板路由 ZC Web 等专属镜像）
@@ -1166,9 +1178,11 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
 
                 // task.status 从 succeeded 降级回 running（表示"还在修"），fix_attempts++
                 // ready 分支会在 dev 重新 ready 时再把 status 切回 succeeded（基于 DB 读取，无需内存标志）
+                // 1.5 W1.2：新 attempt 开始 → reset actual_cost_tokens（accumulated 保留）
                 let mut active: project_generation_task::ActiveModel = task.into();
                 active.status = Set("running".to_string());
                 active.fix_attempts = Set(attempts + 1);
+                active.actual_cost_tokens = Set(Some(0));
                 active.updated_at = Set(chrono::Utc::now().naive_utc());
                 let _ = active.update(&state.db).await;
 
@@ -1279,9 +1293,10 @@ fn spawn_dev_status_watcher(state: AppState, task_id: i32, sandbox_id: String, c
                     }
                 }
 
-                // 更新 fix_attempts
+                // 更新 fix_attempts；1.5 W1.2 reset actual_cost_tokens（新 attempt 重新计数）
                 let mut active: project_generation_task::ActiveModel = task.into();
                 active.fix_attempts = Set(attempts + 1);
+                active.actual_cost_tokens = Set(Some(0));
                 active.updated_at = Set(chrono::Utc::now().naive_utc());
                 let _ = active.update(&state.db).await;
 
@@ -1684,6 +1699,26 @@ async fn try_translate_amis(
     )
 }
 
+/// 1.5 W3 B：A/B 分桶决策。
+///
+/// 读 `llm.routing.ab_test_enabled`（默认 false，开关关闭时全部返回 None）。
+/// 开启时按 user_id 稳定分桶（同用户始终一桶），50/50 切 a/b：
+///   - bucket < 50 → "a"（沿用主 routing 配置 `_json`）
+///   - bucket ≥ 50 → "b"（用 `_json_b` 覆盖表，admin 可配置成与 A 不同）
+///
+/// 分桶字段写入 `project_generation_task.ab_variant`，admin `/api/admin/ab-compare`
+/// 端点按此聚合 cost-per-success 对比。
+async fn compute_ab_variant(state: &AppState, user_id: i32) -> Option<String> {
+    let enabled =
+        crate::handlers::system_settings::read_value_or(state, "llm.routing.ab_test_enabled", "false")
+            .await;
+    if enabled.trim().to_lowercase() != "true" {
+        return None;
+    }
+    let bucket = (user_id as u32).wrapping_mul(31) % 100;
+    Some(if bucket < 50 { "a".into() } else { "b".into() })
+}
+
 async fn mark_task_failed(state: &AppState, task_id: i32, reason: &str) {
     tracing::error!("任务 {} 失败: {}", task_id, reason);
 
@@ -1838,6 +1873,16 @@ async fn fetch_rag_extra_sections(
         .await
         .trim()
         .eq_ignore_ascii_case("true");
+    // 1.5 W4：D 项 A/B 评测开关 — false 时强制纯向量召回（用于跑 A 组对照）
+    let dual_route_enabled = read_value_or(&state, "rag.dual_route.enabled", "true")
+        .await
+        .trim()
+        .eq_ignore_ascii_case("true");
+    let query_amis_json_payload: Option<&str> = if dual_route_enabled {
+        Some(query_amis_json.as_str())
+    } else {
+        None
+    };
 
     let resp = match state
         .http_client
@@ -1849,7 +1894,7 @@ async fn fetch_rag_extra_sections(
             "ui_libs": &ui_libs,
             "tech_stack": &legacy_tech_stack,
             "query_text": query_text,
-            "query_amis_json": query_amis_json,  // 1.4 B.1 双路召回
+            "query_amis_json": query_amis_json_payload,  // 1.4 B.1 / 1.5 W4：dual_route_enabled=false 时为 null → 纯向量
             "top_k": 3,
             "only_approved": true,
             "increment_hits": true,
@@ -2025,6 +2070,7 @@ async fn fetch_rag_extra_sections(
     }
 
     // 事件：RAG 样例注入（含每条的 id / similarity / team，供"执行详情"面板审计）
+    // 1.5 W4：透出 keyword_hits + score（B.1 双路加分量），便于 D 项评测分析
     let event_payload = json!({
         "type": "rag_samples_injected",
         "data": {
@@ -2036,6 +2082,8 @@ async fn fetch_rag_extra_sections(
                 "id": r.get("id").and_then(|v| v.as_i64()),
                 "source_team": r.get("source_team").and_then(|v| v.as_str()),
                 "similarity": r.get("similarity").and_then(|v| v.as_f64()),
+                "keyword_hits": r.get("keyword_hits").and_then(|v| v.as_i64()),
+                "score": r.get("score").and_then(|v| v.as_f64()),
                 "amis_json_summary": r.get("amis_json_summary")
                     .and_then(|v| v.as_str())
                     .map(|s| s.chars().take(150).collect::<String>()),

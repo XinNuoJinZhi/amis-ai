@@ -72,8 +72,15 @@ pub struct Model {
     // 1.4 A.3：成本预算
     /// 创建时预估的 token 成本（用于 quota 预扣 + 超额判断）
     pub estimated_cost_tokens: Option<i32>,
-    /// 任务完成后从 LLM provider response 累加的真实成本（W4 接入实际写入）
+    /// 1.5 W1.2 语义变更："当前 attempt"的真实 token 成本（fix retry 时 reset 0）
     pub actual_cost_tokens: Option<i32>,
+    /// 1.5 W1.2 新增：所有 attempt 累计的真实 token 成本（永不 reset，审计用）
+    pub accumulated_cost_tokens: Option<i32>,
+
+    // 1.5 W3 B：A/B 路由分桶（消费侧未开，先写入便于后续 admin 对比）
+    /// A/B 分桶标签：'a' / 'b' / 'control' / NULL（feature flag 关闭时全部 NULL）
+    #[sea_orm(column_type = "Text", nullable)]
+    pub ab_variant: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

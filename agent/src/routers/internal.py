@@ -381,62 +381,87 @@ async def classify_task_category_endpoint(
         {"role": "system", "content": _TASK_CATEGORY_PROMPT},
         {"role": "user", "content": user_msg},
     ]
-    try:
-        result = await chat_completion(request.task_type, messages, stream=False)
-    except Exception as e:
-        return {"ok": False, "error": f"LLM 调用失败：{e}"}
-
-    content = (
-        result.get("choices", [{}])[0]
-        .get("message", {})
-        .get("content", "")
-        .strip()
-    )
-    model_used = result.get("model") or result.get("model_used") or request.task_type
-
-    # 复用 fence 剥离 + 兜底找 {} 的 JSON 容错 parse
-    raw = content
-    if raw.startswith("```"):
-        lines = raw.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        raw = "\n".join(lines).strip()
-
-    try:
-        parsed = _json.loads(raw)
-    except Exception:
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if 0 <= start < end:
-            try:
-                parsed = _json.loads(raw[start : end + 1])
-            except Exception as e:
-                return {"ok": False, "error": f"JSON 解析失败：{e}", "raw": content[:400]}
-        else:
-            return {"ok": False, "error": "无 JSON 结构", "raw": content[:400]}
 
     _VALID_CATEGORIES = {
         "static_page", "data_table", "multipage_dashboard", "oa_form",
         "ecommerce", "admin_settings", "zc_business", "__other__",
     }
-    category = str(parsed.get("category", "")).strip().lower()
-    if category not in _VALID_CATEGORIES:
-        # 容错：未知 category 一律归到 __other__，不让 LLM 输出抖动阻断主流程
-        category = "__other__"
 
-    try:
-        confidence = float(parsed.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        confidence = 0.0
-    confidence = max(0.0, min(1.0, confidence))
+    # 1.5 W1.1：单次 LLM 调用 + 解析，封装为 inner 函数；失败/解析异常时由 outer 重试
+    #   重试上限 1 次（共 2 次尝试），避免拖累 backend 的 5s timeout（fast 模型 < 2s/次）
+    async def _try_classify() -> tuple[bool, dict]:
+        try:
+            result = await chat_completion(request.task_type, messages, stream=False)
+        except Exception as exc:
+            return False, {"error": f"LLM 调用失败：{exc}"}
 
+        content_raw = (
+            result.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        )
+        model_used_local = (
+            result.get("model") or result.get("model_used") or request.task_type
+        )
+
+        # 复用 fence 剥离 + 兜底找 {} 的 JSON 容错 parse
+        raw = content_raw
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip().startswith("```"):
+                lines = lines[:-1]
+            raw = "\n".join(lines).strip()
+
+        try:
+            parsed_local = _json.loads(raw)
+        except Exception:
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if 0 <= start < end:
+                try:
+                    parsed_local = _json.loads(raw[start : end + 1])
+                except Exception as exc:
+                    return False, {
+                        "error": f"JSON 解析失败：{exc}",
+                        "raw": content_raw[:400],
+                    }
+            else:
+                return False, {"error": "无 JSON 结构", "raw": content_raw[:400]}
+
+        cat_local = str(parsed_local.get("category", "")).strip().lower()
+        if cat_local not in _VALID_CATEGORIES:
+            # 1.5 W1.1：未知 category 视作软失败（让 outer 重试一次），第二次仍未知再降级为 __other__
+            return False, {"error": f"未知 category={cat_local!r}", "raw": content_raw[:400]}
+
+        try:
+            conf_local = float(parsed_local.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            conf_local = 0.0
+        conf_local = max(0.0, min(1.0, conf_local))
+
+        return True, {
+            "category": cat_local,
+            "confidence": conf_local,
+            "model_used": model_used_local,
+        }
+
+    last_err: dict = {}
+    for _attempt in range(2):  # 0=首次 1=重试
+        ok_local, data_local = await _try_classify()
+        if ok_local:
+            return {"ok": True, **data_local}
+        last_err = data_local
+
+    # 2 次都失败：仍不阻断 backend（返回 __other__ + 0 confidence，backend 会退化为纯 score 决策）
     return {
         "ok": True,
-        "category": category,
-        "confidence": confidence,
-        "model_used": model_used,
+        "category": "__other__",
+        "confidence": 0.0,
+        "model_used": request.task_type,
+        "fallback_reason": last_err.get("error", "unknown"),
     }
 
 

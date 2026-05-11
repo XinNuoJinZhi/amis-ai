@@ -13,3 +13,4 @@ pub mod system_settings;
 pub mod registry;
 pub mod task_analyzer;
 pub mod conversation;
+pub mod ab_compare;
