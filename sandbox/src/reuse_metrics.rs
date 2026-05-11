@@ -3,6 +3,11 @@
 //! 扫 src/pages 下所有 .vue 文件中 import shared/ 引用次数，除以 .vue 文件总数 = 复用率
 //! 例如：3 个页面，每个 import 2 次 shared = 6 imports / 3 files = rate 2.0
 //! 高于 1.0 表示平均每页有多次共享 import，复用很积极
+//!
+//! 注：W6.5 改造时把复用率计算搬到了 backend `multipage_reuse.rs`（避免跨 sandbox HTTP 调用 +
+//! 性能更好）。本文件保留供后续可能的容器内调用（如 sandbox 内置 lint / health check 用），
+//! 当前 sandbox 二进制内确实未引用 → 显式 allow(dead_code) 抑制编译警告。
+#![allow(dead_code)]
 
 use regex::Regex;
 use serde::Serialize;
