@@ -60,9 +60,13 @@ claw-code/rust/target/
 # plan 本地副本（如果 engineer 另存）
 docs/plans/*.local.md
 
-# 1.2.0 评测 runner 产物（每次跑会带时间戳，源码不持久化）
+# 评测 runner 产物（每次跑会带时间戳，源码不持久化）
 eval/multipage-1.2/results-*.csv
 eval/multipage-1.2/results-*.md
+eval/zc-web-1.3/results-*.csv
+eval/zc-web-1.3/results-*.md
+eval/zc-mobile-1.3.1/results-*.csv
+eval/zc-mobile-1.3.1/results-*.md
 
 # 1.3 ZC Amis 私有 npm 离线包（按需 fetch，sandbox 镜像构建时引用，不入仓）
 shared/docker/sandbox/zc-web-node20/zc-packages/*.tgz
