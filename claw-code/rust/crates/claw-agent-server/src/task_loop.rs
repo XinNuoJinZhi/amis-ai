@@ -326,6 +326,11 @@ async fn run_task_loop(config: TaskLoopConfig) -> anyhow::Result<()> {
                 // 新客户端已传多维字段：legacy 字段仅作目录名的次要候选
                 Some(tech_stack.as_str())
             },
+            // 1.3.2 修复：backend 已经在入库时把 template.default_skill_buckets 写进
+            // selected_skill_buckets DB 字段（即上面的 explicit_buckets），所以这里
+            // 不再二次从 template 拿默认（传空切片，避免双重激活引发 priority 紊乱）。
+            // 参见 backend/src/handlers/registry.rs::resolve_selected_buckets。
+            template_default_buckets: &[],
         };
         let (skill_sections, selected_skill_meta) =
             crate::skills::build_skills_system_prompt_v2_with_meta(
