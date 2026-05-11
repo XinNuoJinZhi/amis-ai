@@ -75,6 +75,18 @@ LLM 输出 type 时严格按上表，不要混用连字符 / 下划线 / 驼峰�
 - ReportForms 部分图表依赖 ZC 私有图表库 → 优先用通用 `bar`/`line`/`pie` 等基础图表
 - 工作流 `flowCreate` 涉及 ZC BPMN 引擎 → sandbox 仅生成 schema 不跑实际流程
 
+## 按需检索的业务模式 references
+
+LLM 生成 ZC Web 代码时按命中的 schema 类型**主动检索**对应模式（progressive disclosure 协议）：
+
+- `references/simple-page-pattern.md` — 单 schema 直接 `amisRender`（80% 场景）
+- `references/complex-page-pattern.md` — amis + React 包装层（aside/header/跨 schema 联动）
+- `references/modeltable-pattern.md` — ZC `modeltable` 数据建模 CRUD（vs 原版 crud）
+- `references/modelform-pattern.md` — ZC `modelform` 数据建模表单（vs 原版 form）
+- `references/api-fetcher-pattern.md` — `service` fetcher + `app://` 协议改写 + DEV mock 兜底
+
+每个 reference 含「骨架代码 + 关键决策表 + scaffold 内可 Read 的同类参考页 + DO/DON'T」。
+
 ## 关联文档
 
 - 二开点报告：[../../docs/zc-amis-diff-report.md](../../docs/zc-amis-diff-report.md)
