@@ -1,0 +1,10 @@
+prompt_id,prompt_title,page_count,strategy,execution_strategy,reuse_strategy,runner_wall_sec,task_id,task_status,pages_done,pages_total,pass_rate,reuse_rate,import_count,file_count,llm_calls,llm_total_ms,total_dur_sec,rag_ok
+adv_a1_desc_user_amis_product,"A1 对抗 · 描述说""用户管理""但 amis 是商品价目表",3,r4_baseline,isolated,r4_none,36.2,279,succeeded,3,3,1.0,0.0,0,3,25,49809,21,True
+adv_a2_desc_oa_amis_static,"A2 对抗 · 描述说""OA 请假流程""但 amis 是图文卡片",3,r4_baseline,isolated,r4_none,31.0,280,succeeded,3,3,1.0,0.0,0,3,28,31379,17,True
+adv_a3_desc_report_amis_settings,"A3 对抗 · 描述说""销售报表 dashboard""但 amis 是系统设置",3,r4_baseline,isolated,r4_none,17.3,281,succeeded,3,3,1.0,0.0,0,3,21,36855,15,True
+conf_b1_mixed_select,B1 混淆 · select 控件三种来源同页（amis 原生 / element 风格 / ZC 二开）,3,r4_baseline,isolated,r4_none,15.9,282,succeeded,3,3,1.0,0.0,0,3,25,29802,13,True
+conf_b2_date_mixed,B2 混淆 · 多 date 控件混合（date / datetime / date-range / month）,4,r4_baseline,isolated,r4_none,15.2,283,succeeded,4,4,1.0,0.0,0,4,31,31573,14,True
+conf_b3_form_layout,B3 混淆 · form 布局多变体（grid / fieldSet / inline / 分组联动）,2,r4_baseline,isolated,r4_none,16.2,284,succeeded,2,2,1.0,0.0,0,2,14,16286,10,True
+cold_c1_medical,C1 冷启动 · 医疗病历（病人档案+病历+处方）,3,r4_baseline,isolated,r4_none,32.8,285,succeeded,3,3,1.0,0.0,0,3,19,46085,17,True
+cold_c2_education,C2 冷启动 · 教育课程（课程列表+选课+成绩）,3,r4_baseline,isolated,r4_none,15.5,286,succeeded,3,3,1.0,0.0,0,3,21,30275,12,True
+cold_c3_legal,C3 冷启动 · 法律案件（案件登记+卷宗+庭审）,3,r4_baseline,isolated,r4_none,30.4,287,succeeded,3,3,1.0,0.0,0,3,22,37685,20,True

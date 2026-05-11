@@ -1,0 +1,109 @@
+{
+  "_comment": "1.5 W1.3 · D 项 RAG 压力评测 prompt 集 — 复用 multipage-1.2 runner",
+  "_goal": "让 B.1 双路召回（向量 + amis JSON 关键字）vs 单路向量召回的真实价值可观测",
+  "_indicators": "页通过率 / keyword_hits Top-3 命中率 / 失败 case 中 cos_sim 高但 kw=0 的占比",
+  "_strategy_note": "推荐跑 r4_baseline（最贴近线上独立 page 模式）；如需横向对比 r1_skeleton 也可加",
+  "_dataset_design": "三类样本：A 对抗（描述 vs amis 不一致，向量召回会被描述误导）/ B 混淆（同 type 不同 ui_lib，需 keyword 兜底）/ C 冷启动（新业务类别，向量召回信号弱）",
+  "_runner_hint": "python3 eval/multipage-1.2/runner.py --prompts-file eval/1.5-rag-stress/prompts.json --strategies r4_baseline --tech-stack react-antd-vite --max-wait-sec 1200",
+  "prompts": [
+    {
+      "id": "adv_a1_desc_user_amis_product",
+      "title": "A1 对抗 · 描述说\"用户管理\"但 amis 是商品价目表",
+      "_note": "向量召回会被 extra_prompt 拉去用户管理样本，但 amis JSON 关键字（commodity / price / sku）应纠偏到电商样本",
+      "_extra_prompt": "做一个员工用户管理后台，含部门筛选、角色权限、新增编辑",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"商品列表\",\"body\":[{\"type\":\"crud\",\"api\":\"app://commodity/list\",\"filter\":{\"controls\":[{\"name\":\"category\",\"label\":\"类目\",\"type\":\"select\",\"options\":[\"3C\",\"服饰\",\"食品\"]},{\"name\":\"priceRange\",\"label\":\"价格区间\",\"type\":\"input-range\"}]},\"columns\":[{\"name\":\"sku\",\"label\":\"SKU\"},{\"name\":\"name\",\"label\":\"商品名\"},{\"name\":\"category\",\"label\":\"类目\"},{\"name\":\"price\",\"label\":\"标价\",\"type\":\"tpl\",\"tpl\":\"¥${price}\"},{\"name\":\"stock\",\"label\":\"库存\"},{\"name\":\"updatedAt\",\"label\":\"调价时间\",\"type\":\"datetime\"}]}]}", "route_path": "/commodity"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"价格调整\",\"body\":[{\"type\":\"form\",\"api\":\"app://commodity/price/save\",\"controls\":[{\"name\":\"sku\",\"label\":\"SKU\",\"type\":\"text\",\"required\":true},{\"name\":\"basePrice\",\"label\":\"标价\",\"type\":\"input-number\",\"min\":0,\"required\":true},{\"name\":\"promoPrice\",\"label\":\"促销价\",\"type\":\"input-number\",\"min\":0},{\"name\":\"effectiveFrom\",\"label\":\"生效时间\",\"type\":\"input-datetime\"}]}]}", "route_path": "/commodity/price"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"促销活动\",\"body\":[{\"type\":\"cards\",\"source\":\"app://promotion/active\",\"card\":{\"header\":{\"title\":\"${name}\"},\"body\":[{\"type\":\"tpl\",\"tpl\":\"折扣：${discount}%\"},{\"type\":\"tpl\",\"tpl\":\"覆盖商品：${skuCount}\"}],\"actions\":[{\"label\":\"详情\",\"type\":\"button\",\"actionType\":\"link\",\"link\":\"/promotion/detail\"}]}}]}", "route_path": "/promotion"}
+      ]
+    },
+    {
+      "id": "adv_a2_desc_oa_amis_static",
+      "title": "A2 对抗 · 描述说\"OA 请假流程\"但 amis 是图文卡片",
+      "_note": "向量召回会被描述拉去 oa_form 样本（重表单/校验），但 amis 是 static_page（图文/卡片），关键字 article/banner/markdown 应纠偏",
+      "_extra_prompt": "做一个 OA 请假申请流程，含多步表单、审批流转、抄送、撤回",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"公司新闻\",\"body\":[{\"type\":\"banner\",\"image\":\"https://example.com/banner.jpg\",\"title\":\"2026 年中庆典\"},{\"type\":\"markdown\",\"value\":\"# 欢迎来到我们的公司\\n\\n这里有最新的活动公告和团队动态。\"},{\"type\":\"cards\",\"source\":\"app://news/list\",\"card\":{\"header\":{\"title\":\"${title}\"},\"body\":[{\"type\":\"tpl\",\"tpl\":\"${summary}\"},{\"type\":\"tpl\",\"tpl\":\"发布时间：${publishAt}\"}]}}]}", "route_path": "/news"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"图文展示\",\"body\":[{\"type\":\"grid\",\"columns\":[{\"body\":[{\"type\":\"image\",\"src\":\"https://example.com/img1.jpg\"}]},{\"body\":[{\"type\":\"image\",\"src\":\"https://example.com/img2.jpg\"}]}]},{\"type\":\"markdown\",\"value\":\"## 团队风采\\n\\n我们的团队由资深专家组成。\"}]}", "route_path": "/gallery"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"公告详情\",\"body\":[{\"type\":\"tpl\",\"tpl\":\"<h2>${title}</h2>\"},{\"type\":\"tpl\",\"tpl\":\"发布：${author} · ${publishAt}\"},{\"type\":\"markdown\",\"value\":\"${content}\"}]}", "route_path": "/announcement/detail"}
+      ]
+    },
+    {
+      "id": "adv_a3_desc_report_amis_settings",
+      "title": "A3 对抗 · 描述说\"销售报表 dashboard\"但 amis 是系统设置",
+      "_note": "向量会拉到 dashboard 样本（chart/report-forms），但 amis 是 admin_settings（配置项/字典），关键字 config/setting/dict 应纠偏",
+      "_extra_prompt": "做一个销售数据 dashboard，含日销量趋势图、Top10 商品报表、客户漏斗分析",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"系统参数\",\"body\":[{\"type\":\"form\",\"api\":\"app://config/save\",\"controls\":[{\"name\":\"systemName\",\"label\":\"系统名称\",\"type\":\"text\",\"required\":true},{\"name\":\"language\",\"label\":\"默认语言\",\"type\":\"select\",\"options\":[\"zh-CN\",\"en-US\"]},{\"name\":\"timezone\",\"label\":\"时区\",\"type\":\"select\",\"options\":[\"Asia/Shanghai\",\"UTC\"]},{\"name\":\"loginRetry\",\"label\":\"登录重试次数\",\"type\":\"input-number\",\"min\":1,\"max\":10},{\"name\":\"sessionTimeout\",\"label\":\"会话超时（分钟）\",\"type\":\"input-number\"}]}]}", "route_path": "/system/config"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"字典维护\",\"body\":[{\"type\":\"crud\",\"api\":\"app://dict/list\",\"filter\":{\"controls\":[{\"name\":\"dictType\",\"label\":\"字典类型\",\"type\":\"select\",\"source\":\"app://dict/types\"}]},\"columns\":[{\"name\":\"code\",\"label\":\"编码\"},{\"name\":\"name\",\"label\":\"名称\"},{\"name\":\"value\",\"label\":\"值\"},{\"name\":\"sortOrder\",\"label\":\"排序\"}],\"itemActions\":[{\"label\":\"编辑\",\"actionType\":\"dialog\"},{\"label\":\"删除\",\"actionType\":\"ajax\",\"confirmText\":\"确认删除？\"}]}]}", "route_path": "/system/dict"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"权限矩阵\",\"body\":[{\"type\":\"crud\",\"api\":\"app://permission/list\",\"columns\":[{\"name\":\"roleName\",\"label\":\"角色\"},{\"name\":\"module\",\"label\":\"模块\"},{\"name\":\"perm\",\"label\":\"权限\",\"type\":\"tag\"}]}]}", "route_path": "/system/permission"}
+      ]
+    },
+    {
+      "id": "conf_b1_mixed_select",
+      "title": "B1 混淆 · select 控件三种来源同页（amis 原生 / element 风格 / ZC 二开）",
+      "_note": "同 type:select / department-select / user-select 同时出现，目标看 RAG 能否按 tech_stack=react-antd-vite 优先 amis 原生样本，而不是误抓 zc_business 样本",
+      "_extra_prompt": "做一个项目协作工具，要含项目筛选下拉、成员选择、部门归属，使用 amis 原生 select 即可",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"项目列表\",\"body\":[{\"type\":\"crud\",\"api\":\"app://project/list\",\"filter\":{\"controls\":[{\"name\":\"status\",\"label\":\"状态\",\"type\":\"select\",\"options\":[\"草稿\",\"进行中\",\"已归档\"]},{\"name\":\"ownerDept\",\"label\":\"所属部门\",\"type\":\"department-select\"},{\"name\":\"lead\",\"label\":\"负责人\",\"type\":\"user-select\"}]},\"columns\":[{\"name\":\"name\",\"label\":\"项目名\"},{\"name\":\"status\",\"label\":\"状态\",\"type\":\"status\"},{\"name\":\"progress\",\"label\":\"进度\",\"type\":\"progress\"}]}]}", "route_path": "/projects"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"任务分配\",\"body\":[{\"type\":\"form\",\"api\":\"app://task/assign\",\"controls\":[{\"name\":\"taskTitle\",\"label\":\"任务\",\"type\":\"text\",\"required\":true},{\"name\":\"priority\",\"label\":\"优先级\",\"type\":\"select\",\"options\":[\"高\",\"中\",\"低\"],\"required\":true},{\"name\":\"assignees\",\"label\":\"指派给\",\"type\":\"user-select\",\"multiple\":true},{\"name\":\"dueDate\",\"label\":\"截止日期\",\"type\":\"date\"}]}]}", "route_path": "/tasks/assign"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"任务看板\",\"body\":[{\"type\":\"grid\",\"columns\":[{\"body\":[{\"type\":\"panel\",\"title\":\"待办\",\"body\":[{\"type\":\"cards\",\"source\":\"app://task/todo\"}]}]},{\"body\":[{\"type\":\"panel\",\"title\":\"进行中\",\"body\":[{\"type\":\"cards\",\"source\":\"app://task/wip\"}]}]},{\"body\":[{\"type\":\"panel\",\"title\":\"已完成\",\"body\":[{\"type\":\"cards\",\"source\":\"app://task/done\"}]}]}]}]}", "route_path": "/tasks/board"}
+      ]
+    },
+    {
+      "id": "conf_b2_date_mixed",
+      "title": "B2 混淆 · 多 date 控件混合（date / datetime / date-range / month）",
+      "_note": "amis 原生 date 控件四种变体同页出现，目标看 RAG 能否区分日期/日期时间/日期段而非笼统抓 form 样本",
+      "_extra_prompt": "做一个考勤打卡分析，含按月汇总、按日明细、自定义时段查询",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"按月汇总\",\"body\":[{\"type\":\"form\",\"controls\":[{\"name\":\"month\",\"label\":\"统计月份\",\"type\":\"input-month\",\"required\":true}]},{\"type\":\"chart\",\"api\":\"app://attendance/monthly\",\"width\":800,\"height\":400}]}", "route_path": "/attendance/monthly"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"按日明细\",\"body\":[{\"type\":\"crud\",\"api\":\"app://attendance/daily\",\"filter\":{\"controls\":[{\"name\":\"date\",\"label\":\"日期\",\"type\":\"input-date\",\"required\":true},{\"name\":\"empName\",\"label\":\"员工\",\"type\":\"text\"}]},\"columns\":[{\"name\":\"empName\",\"label\":\"员工\"},{\"name\":\"checkInTime\",\"label\":\"上班\",\"type\":\"datetime\"},{\"name\":\"checkOutTime\",\"label\":\"下班\",\"type\":\"datetime\"},{\"name\":\"duration\",\"label\":\"工时\"}]}]}", "route_path": "/attendance/daily"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"自定义时段\",\"body\":[{\"type\":\"form\",\"controls\":[{\"name\":\"range\",\"label\":\"日期范围\",\"type\":\"input-date-range\",\"required\":true},{\"name\":\"precision\",\"label\":\"精度\",\"type\":\"select\",\"options\":[\"分钟\",\"小时\",\"天\"]}]},{\"type\":\"table\",\"source\":\"app://attendance/custom\"}]}", "route_path": "/attendance/custom"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"加班审批\",\"body\":[{\"type\":\"form\",\"api\":\"app://overtime/apply\",\"controls\":[{\"name\":\"startAt\",\"label\":\"开始\",\"type\":\"input-datetime\",\"required\":true},{\"name\":\"endAt\",\"label\":\"结束\",\"type\":\"input-datetime\",\"required\":true},{\"name\":\"reason\",\"label\":\"事由\",\"type\":\"textarea\",\"required\":true}]}]}", "route_path": "/overtime"}
+      ]
+    },
+    {
+      "id": "conf_b3_form_layout",
+      "title": "B3 混淆 · form 布局多变体（grid / fieldSet / inline / 分组联动）",
+      "_note": "同一项目里 form 控件用 4 种布局，看 RAG 是否会笼统抓表单样本而不区分布局策略",
+      "_extra_prompt": "做一个 OA 出差申请，要分基本信息、行程、报销三段，并联动控件可见性",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"出差申请\",\"body\":[{\"type\":\"form\",\"api\":\"app://trip/apply\",\"mode\":\"horizontal\",\"controls\":[{\"type\":\"fieldSet\",\"title\":\"基本信息\",\"body\":[{\"name\":\"empName\",\"label\":\"申请人\",\"type\":\"text\",\"required\":true},{\"name\":\"dept\",\"label\":\"部门\",\"type\":\"department-select\",\"required\":true}]},{\"type\":\"fieldSet\",\"title\":\"行程\",\"body\":[{\"name\":\"from\",\"label\":\"出发\",\"type\":\"text\",\"required\":true},{\"name\":\"to\",\"label\":\"目的地\",\"type\":\"text\",\"required\":true},{\"name\":\"period\",\"label\":\"时段\",\"type\":\"input-date-range\",\"required\":true},{\"name\":\"transport\",\"label\":\"交通\",\"type\":\"select\",\"options\":[\"飞机\",\"高铁\",\"汽车\"]}]},{\"type\":\"fieldSet\",\"title\":\"报销\",\"visibleOn\":\"this.transport != null\",\"body\":[{\"name\":\"estimateCost\",\"label\":\"预计金额\",\"type\":\"input-number\",\"min\":0,\"required\":true},{\"name\":\"reimbursementType\",\"label\":\"报销方式\",\"type\":\"radios\",\"options\":[\"垫付\",\"预借\"]}]}]}]}", "route_path": "/trip/apply"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"行程详情\",\"body\":[{\"type\":\"form\",\"mode\":\"inline\",\"controls\":[{\"name\":\"tripId\",\"label\":\"编号\",\"type\":\"text\",\"disabled\":true},{\"name\":\"status\",\"label\":\"状态\",\"type\":\"select\",\"disabled\":true}]},{\"type\":\"tabs\",\"tabs\":[{\"title\":\"行程信息\",\"body\":[{\"type\":\"tpl\",\"tpl\":\"出发：${from} → ${to}\"}]},{\"title\":\"审批记录\",\"body\":[{\"type\":\"table\",\"source\":\"app://trip/history\"}]}]}]}", "route_path": "/trip/detail"}
+      ]
+    },
+    {
+      "id": "cold_c1_medical",
+      "title": "C1 冷启动 · 医疗病历（病人档案+病历+处方）",
+      "_note": "训练集没医疗领域样本，向量召回信号弱，看双路融合下 keyword（patient/diagnosis/prescription）能不能补",
+      "_extra_prompt": "做一个社区诊所的简易病历系统，含病人档案、就诊记录、处方开具",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"病人档案\",\"body\":[{\"type\":\"crud\",\"api\":\"app://patient/list\",\"filter\":{\"controls\":[{\"name\":\"name\",\"label\":\"姓名\",\"type\":\"text\"},{\"name\":\"gender\",\"label\":\"性别\",\"type\":\"select\",\"options\":[\"男\",\"女\"]},{\"name\":\"ageRange\",\"label\":\"年龄段\",\"type\":\"select\",\"options\":[\"0-18\",\"19-59\",\"60+\"]}]},\"columns\":[{\"name\":\"patientNo\",\"label\":\"病案号\"},{\"name\":\"name\",\"label\":\"姓名\"},{\"name\":\"gender\",\"label\":\"性别\"},{\"name\":\"age\",\"label\":\"年龄\"},{\"name\":\"phone\",\"label\":\"联系电话\"},{\"name\":\"allergies\",\"label\":\"过敏史\",\"type\":\"tag\"}]}]}", "route_path": "/patients"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"就诊记录\",\"body\":[{\"type\":\"form\",\"api\":\"app://visit/create\",\"controls\":[{\"name\":\"patientNo\",\"label\":\"病案号\",\"type\":\"text\",\"required\":true},{\"name\":\"visitDate\",\"label\":\"就诊日期\",\"type\":\"input-datetime\",\"required\":true},{\"name\":\"chiefComplaint\",\"label\":\"主诉\",\"type\":\"textarea\",\"required\":true},{\"name\":\"diagnosis\",\"label\":\"诊断\",\"type\":\"textarea\",\"required\":true},{\"name\":\"icd10\",\"label\":\"ICD-10 编码\",\"type\":\"text\"},{\"name\":\"doctor\",\"label\":\"接诊医生\",\"type\":\"text\",\"required\":true}]}]}", "route_path": "/visits/create"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"处方开具\",\"body\":[{\"type\":\"form\",\"api\":\"app://prescription/save\",\"controls\":[{\"name\":\"visitId\",\"label\":\"就诊记录\",\"type\":\"text\",\"required\":true},{\"type\":\"input-table\",\"name\":\"medicines\",\"label\":\"用药明细\",\"columns\":[{\"name\":\"drug\",\"label\":\"药品\",\"type\":\"text\"},{\"name\":\"dosage\",\"label\":\"剂量\",\"type\":\"text\"},{\"name\":\"frequency\",\"label\":\"频次\",\"type\":\"select\",\"options\":[\"qd\",\"bid\",\"tid\",\"qid\"]},{\"name\":\"days\",\"label\":\"天数\",\"type\":\"input-number\"}]},{\"name\":\"advice\",\"label\":\"医嘱\",\"type\":\"textarea\"}]}]}", "route_path": "/prescriptions"}
+      ]
+    },
+    {
+      "id": "cold_c2_education",
+      "title": "C2 冷启动 · 教育课程（课程列表+选课+成绩）",
+      "_note": "教育领域无样本，看 keyword（course/student/grade/enrollment）能否补",
+      "_extra_prompt": "做一个学校教务管理系统，含课程开设、学生选课、成绩录入",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"开课计划\",\"body\":[{\"type\":\"crud\",\"api\":\"app://course/list\",\"filter\":{\"controls\":[{\"name\":\"semester\",\"label\":\"学期\",\"type\":\"select\",\"options\":[\"2026 秋\",\"2026 春\"]},{\"name\":\"college\",\"label\":\"开课学院\",\"type\":\"select\"}]},\"columns\":[{\"name\":\"courseCode\",\"label\":\"课程代码\"},{\"name\":\"courseName\",\"label\":\"课程名\"},{\"name\":\"credit\",\"label\":\"学分\"},{\"name\":\"teacher\",\"label\":\"任课老师\"},{\"name\":\"capacity\",\"label\":\"容量\"},{\"name\":\"enrolled\",\"label\":\"已选\"}]}]}", "route_path": "/courses"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"学生选课\",\"body\":[{\"type\":\"form\",\"api\":\"app://enrollment/submit\",\"controls\":[{\"name\":\"studentId\",\"label\":\"学号\",\"type\":\"text\",\"required\":true},{\"name\":\"semester\",\"label\":\"学期\",\"type\":\"select\",\"required\":true,\"options\":[\"2026 秋\",\"2026 春\"]},{\"type\":\"input-table\",\"name\":\"selectedCourses\",\"label\":\"选课列表\",\"columns\":[{\"name\":\"courseCode\",\"label\":\"课程\",\"type\":\"text\"},{\"name\":\"credit\",\"label\":\"学分\",\"type\":\"text\",\"disabled\":true},{\"name\":\"slot\",\"label\":\"时段\",\"type\":\"text\"}]}]}]}", "route_path": "/enrollment"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"成绩录入\",\"body\":[{\"type\":\"crud\",\"api\":\"app://grade/list\",\"filter\":{\"controls\":[{\"name\":\"courseCode\",\"label\":\"课程\",\"type\":\"text\",\"required\":true}]},\"columns\":[{\"name\":\"studentId\",\"label\":\"学号\"},{\"name\":\"studentName\",\"label\":\"姓名\"},{\"name\":\"midterm\",\"label\":\"期中\",\"type\":\"input-number\",\"editable\":true},{\"name\":\"final\",\"label\":\"期末\",\"type\":\"input-number\",\"editable\":true},{\"name\":\"total\",\"label\":\"总分\",\"type\":\"tpl\",\"tpl\":\"${midterm*0.4 + final*0.6}\"}]}]}", "route_path": "/grades"}
+      ]
+    },
+    {
+      "id": "cold_c3_legal",
+      "title": "C3 冷启动 · 法律案件（案件登记+卷宗+庭审）",
+      "_note": "法律领域无样本，keyword（case/litigant/court/hearing/evidence）应能在双路下补足召回",
+      "_extra_prompt": "做一个律所案件管理工具，含案件登记、卷宗目录、庭审排期",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"案件登记\",\"body\":[{\"type\":\"form\",\"api\":\"app://case/register\",\"controls\":[{\"name\":\"caseNo\",\"label\":\"案号\",\"type\":\"text\",\"required\":true},{\"name\":\"caseType\",\"label\":\"案件类型\",\"type\":\"select\",\"options\":[\"民事\",\"刑事\",\"行政\",\"仲裁\"],\"required\":true},{\"name\":\"plaintiff\",\"label\":\"原告/申请人\",\"type\":\"text\",\"required\":true},{\"name\":\"defendant\",\"label\":\"被告/被申请人\",\"type\":\"text\",\"required\":true},{\"name\":\"court\",\"label\":\"管辖法院\",\"type\":\"text\"},{\"name\":\"acceptedAt\",\"label\":\"受理日期\",\"type\":\"input-date\",\"required\":true},{\"name\":\"lawyer\",\"label\":\"承办律师\",\"type\":\"user-select\",\"required\":true}]}]}", "route_path": "/cases/register"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"卷宗目录\",\"body\":[{\"type\":\"crud\",\"api\":\"app://case/dossier\",\"filter\":{\"controls\":[{\"name\":\"caseNo\",\"label\":\"案号\",\"type\":\"text\"}]},\"columns\":[{\"name\":\"docType\",\"label\":\"文书类型\",\"type\":\"select\",\"options\":[\"起诉状\",\"答辩状\",\"证据材料\",\"判决书\"]},{\"name\":\"docTitle\",\"label\":\"标题\"},{\"name\":\"uploadedBy\",\"label\":\"上传\"},{\"name\":\"uploadedAt\",\"label\":\"时间\",\"type\":\"datetime\"},{\"name\":\"file\",\"label\":\"文件\",\"type\":\"link\"}]}]}", "route_path": "/cases/dossier"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"庭审排期\",\"body\":[{\"type\":\"crud\",\"api\":\"app://hearing/list\",\"filter\":{\"controls\":[{\"name\":\"month\",\"label\":\"月份\",\"type\":\"input-month\"},{\"name\":\"lawyer\",\"label\":\"承办律师\",\"type\":\"user-select\"}]},\"columns\":[{\"name\":\"caseNo\",\"label\":\"案号\"},{\"name\":\"hearingTime\",\"label\":\"开庭时间\",\"type\":\"datetime\"},{\"name\":\"court\",\"label\":\"法院\"},{\"name\":\"courtRoom\",\"label\":\"法庭\"},{\"name\":\"status\",\"label\":\"状态\",\"type\":\"status\"}],\"itemActions\":[{\"label\":\"开庭备忘\",\"actionType\":\"dialog\"},{\"label\":\"标记到庭\",\"actionType\":\"ajax\"}]}]}", "route_path": "/hearings"}
+      ]
+    }
+  ]
+}

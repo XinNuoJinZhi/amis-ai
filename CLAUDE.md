@@ -125,6 +125,8 @@ cd agent && uv run uvicorn src.main:app --reload --port 8000
 | [2026-05-11-zc-amis-1.3-stage-d-e.md](docs/upgrades/2026-05-11-zc-amis-1.3-stage-d-e.md) | 1.3.0 · 阶段 D/E（ZC Web 出码 + 9 prompts 评测） |
 | [2026-05-11-zc-amis-1.3.1-mobile.md](docs/upgrades/2026-05-11-zc-amis-1.3.1-mobile.md) | 1.3.1 · ZC 智搭小程序底座 + 反向飞轮支持出码 |
 | [2026-05-12-llm-routing-rag-quality-vue3.md](docs/upgrades/2026-05-12-llm-routing-rag-quality-vue3.md) | 1.4.0 · LLM 路由智能化（category × tier 偏置 + token 配额 + actual_cost）+ RAG 质量收口（双路召回 + 负例 + page 评委）+ Vue3 模板（**16 commits，v4 三组 100% 通过**） |
+| [2026-05-12-roadmap-1.5-w1.md](docs/upgrades/2026-05-12-roadmap-1.5-w1.md) | 1.5.0 · 接力首日（W1 + W3 骨架）— 分类器超时 fix + actual_cost 双列 + D 评测集 + A/B schema 占位 |
+| [2026-05-12-1.5-feature-complete.md](docs/upgrades/2026-05-12-1.5-feature-complete.md) | 1.5.0 · 全集（A+B+D）— W2 estimate 校准 + W3 A/B 框架完整 + W4 评测发现并修复 1.4 B.1 多页路径 bug（10 文件 +296/-85，3 轮评测 6 csv） |
 
 ### 规范与清单
 
