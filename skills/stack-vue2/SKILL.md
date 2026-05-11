@@ -5,7 +5,7 @@ kind: stack
 platforms: [web]
 tech_stacks: [vue2]
 requires: [_common, platform-web]
-conflicts: [stack-vue3]
+conflicts: [stack-vue3, stack-react]
 priority: 50
 ---
 

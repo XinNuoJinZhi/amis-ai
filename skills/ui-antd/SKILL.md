@@ -4,6 +4,7 @@ description: Ant Design v5（React）组件库映射规则和最佳实践
 kind: ui
 ui_libs: [antd]
 requires: [_common]
+conflicts: [ui-element-plus, ui-element-ui, ui-wot]
 priority: 30
 ---
 

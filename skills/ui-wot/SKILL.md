@@ -4,6 +4,7 @@ description: Wot UI（uni-app Vue 3 移动端组件库）映射规则
 kind: ui
 ui_libs: [wot]
 requires: [_common]
+conflicts: [ui-antd, ui-element-plus, ui-element-ui]
 priority: 30
 ---
 

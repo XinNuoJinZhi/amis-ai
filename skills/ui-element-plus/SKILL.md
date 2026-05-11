@@ -4,6 +4,7 @@ description: Element Plus（Vue 3）组件库映射规则
 kind: ui
 ui_libs: [element-plus]
 requires: [_common]
+conflicts: [ui-antd, ui-element-ui, ui-wot]
 priority: 30
 ---
 
@@ -75,3 +76,14 @@ app.use(ElementPlus, { locale: zhCn });
 - icons 用 `@element-plus/icons-vue`
 - 主题用 CSS 变量覆盖（`:root { --el-color-primary: #xxx }`），不手写 SCSS 变量
 - 禁止和其他 UI 库混用
+
+## 进阶模式（references/）
+
+按需阅读，触发场景如下：
+
+| 文件 | 触发场景 |
+|---|---|
+| [form-validation-pattern.md](references/form-validation-pattern.md) | 表单含复杂校验（异步唯一性 / 跨字段联动 / 动态规则） |
+| [table-pattern.md](references/table-pattern.md) | `crud` / `table` 远程分页 / 排序 / 行编辑 / 固定列 / slot 自定义渲染 |
+| [dialog-pattern.md](references/dialog-pattern.md) | 弹窗内表单 / 多级弹窗 / 命令式 confirm 删除 |
+| [theme-customization-pattern.md](references/theme-customization-pattern.md) | 改主题色 / 暗黑模式 / 按需引入减包体积 |

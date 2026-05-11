@@ -5,6 +5,7 @@ kind: stack
 platforms: [mobile]
 tech_stacks: [rn, react-native]
 requires: [_common, platform-mobile]
+conflicts: [stack-uniapp]
 priority: 50
 ---
 
