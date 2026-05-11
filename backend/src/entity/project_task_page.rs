@@ -19,6 +19,18 @@ pub struct Model {
     pub error_msg: Option<String>,
     pub created_at: DateTime,
     pub updated_at: DateTime,
+
+    // 1.4 B.3b：page 级 LLM 评委（与 amis schema 是否对齐）
+    /// good / needs_review / bad；NULL = 未评
+    #[sea_orm(column_type = "Text", nullable)]
+    pub page_quality_verdict: Option<String>,
+    /// 评委 reason 说明（LLM 返回，截断 500 字）
+    #[sea_orm(column_type = "Text", nullable)]
+    pub page_quality_reason: Option<String>,
+    pub page_quality_judge_at: Option<DateTime>,
+    /// 评分用的模型名（追溯用，便于切 provider 后解读）
+    #[sea_orm(column_type = "Text", nullable)]
+    pub page_quality_judge_model: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

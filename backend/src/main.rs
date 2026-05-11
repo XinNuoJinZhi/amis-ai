@@ -291,6 +291,8 @@ async fn main() {
          ('rag.judge.task_type',             'quality_judge', 'LLM task_type key（建议绑与 generation 不同 provider 的模型）', NOW()),
          ('rag.judge.budget_per_day',        '50',            '每日 judge 调用上限', NOW()),
          ('rag.judge.batch_concurrency',     '3',             '批量评分并发', NOW()),
+         ('rag.judge.auto_negative_on_bad',  'false',         '1.4 B.3a：评委 verdict=bad 时自动 mark is_negative（默认关闭，admin 评估后开启）', NOW()),
+         ('rag.judge.page_mode',             'disabled',      '1.4 B.3b：page 级评委模式 disabled / manual / auto_on_complete', NOW()),
          ('rag.negative.enabled',            'false',         '总闸：RAG 召回是否额外注入负例', NOW()),
          ('rag.negative.top_k',              '1',             '最多注入几条负例', NOW()),
          ('rag.negative.only_structural',    'true',          '仅注入 negative_kind=structural 的（避 LLM negation blindness）', NOW()),
@@ -373,6 +375,23 @@ async fn main() {
             ALTER COLUMN updated_at TYPE TIMESTAMP,
             ALTER COLUMN started_at TYPE TIMESTAMP,
             ALTER COLUMN finished_at TYPE TIMESTAMP"
+    ).await;
+    // 1.4 B.3b：page 级 LLM 评委结果字段（4 列幂等，全部可空）
+    //   - page_quality_verdict: good / needs_review / bad
+    //   - page_quality_reason: LLM 评委说明（截断 500 字）
+    //   - page_quality_judge_at: 评分时刻
+    //   - page_quality_judge_model: 评分用的模型名
+    let _ = db.execute_unprepared(
+        "ALTER TABLE project_task_page
+            ADD COLUMN IF NOT EXISTS page_quality_verdict  TEXT      NULL,
+            ADD COLUMN IF NOT EXISTS page_quality_reason   TEXT      NULL,
+            ADD COLUMN IF NOT EXISTS page_quality_judge_at TIMESTAMP NULL,
+            ADD COLUMN IF NOT EXISTS page_quality_judge_model TEXT   NULL"
+    ).await;
+    // 高选择性索引：用于查询 bad pages 做评测分析
+    let _ = db.execute_unprepared(
+        "CREATE INDEX IF NOT EXISTS idx_ptp_quality_verdict
+         ON project_task_page(page_quality_verdict) WHERE page_quality_verdict IS NOT NULL"
     ).await;
 
     // 任务级 LLM 选择 + 供应商能力分档的增量 migration

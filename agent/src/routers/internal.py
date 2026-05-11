@@ -320,6 +320,116 @@ async def judge_code_sample_endpoint(
     }
 
 
+# ─────────────────────── 1.4 B.3b：page 级 amis schema 评委 ───────────────────────
+
+
+class JudgePageSchemaRequest(BaseModel):
+    """对单个 page 的 amis JSON 设计做评估（与代码无关）。
+
+    backend 在多页生成完成后或 admin 手动触发。"""
+    page_id: int
+    task_type: str = "quality_judge"
+    route_path: str
+    amis_json: str  # 该 page 的完整 amis JSON
+    tech_stack: str | None = None
+    ui_lib: str | None = None
+
+
+_PAGE_SCHEMA_JUDGE_PROMPT = """你是 amis 低代码产品的页面设计评委。
+
+你的任务：判定一个 page 的 Amis JSON 设计是否合理（**只评 schema 本身，不评代码**）。
+
+评判角度（按重要性递减）：
+  1. **API 协议是否对齐**：CRUD/Form/Service 的 api 字段是否符合规范（如 ZC 必须 app:// 协议）
+  2. **组件搭配是否合理**：必填字段是否设了 required；CRUD 是否含列定义；form 字段是否给了 name
+  3. **嵌套结构是否清晰**：page → body → form/crud 这种典型结构是否合规；不该出现极深嵌套
+  4. **平台特化是否正确**：移动端组件不应出现在 web；ZC 二开组件（user-select / modeltable）配套 prop 是否齐
+  5. **可生成性**：典型字段是否完整到能直接生成业务代码（不缺关键 name / label / type）
+
+输出严格 JSON（不加任何解释、不加 markdown fence）：
+{
+  "verdict": "good" | "needs_review" | "bad",
+  "reason": "一句话解释（<=200字）"
+}
+
+verdict 含义：
+  - good = 设计规范、API 协议齐、组件搭配合理，可直接生成业务代码
+  - needs_review = 整体方向对但有瑕疵（如缺校验 / api 协议含糊），admin 复核
+  - bad = 设计有明显问题（API 协议错 / 组件嵌套乱 / 关键字段缺），不应进入生产
+"""
+
+
+@router.post("/internal/judge-page-schema")
+async def judge_page_schema_endpoint(
+    request: JudgePageSchemaRequest,
+    x_internal_key: str = Header(default=""),
+):
+    """1.4 B.3b · 评 page 的 amis JSON 设计合理性（不评代码）。
+
+    不写 DB（回填 project_task_page.page_quality_* 的职责在 backend 的 quality_judge.rs）。
+    """
+    _check_internal_auth(x_internal_key)
+
+    # amis_json 全文截 8000 字（多页项目单 page 通常 2-5KB，余量充足）
+    user_msg = (
+        f"Page 路由：{request.route_path}\n"
+        f"技术栈：{request.tech_stack or '未指定'} / {request.ui_lib or '未指定'}\n\n"
+        f"Amis JSON（截断 8000 字）：\n{request.amis_json[:8000]}"
+    )
+    messages = [
+        {"role": "system", "content": _PAGE_SCHEMA_JUDGE_PROMPT},
+        {"role": "user", "content": user_msg},
+    ]
+    try:
+        result = await chat_completion(request.task_type, messages, stream=False)
+    except Exception as e:
+        return {"ok": False, "error": f"LLM 调用失败：{e}"}
+
+    content = (
+        result.get("choices", [{}])[0]
+        .get("message", {})
+        .get("content", "")
+        .strip()
+    )
+    model_used = result.get("model") or result.get("model_used") or request.task_type
+
+    # 复用 judge-code-sample 的 JSON 容错 parse（fence 剥离 + 兜底找 {}）
+    raw = content
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
+
+    try:
+        parsed = _json.loads(raw)
+    except Exception:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if 0 <= start < end:
+            try:
+                parsed = _json.loads(raw[start : end + 1])
+            except Exception as e:
+                return {"ok": False, "error": f"LLM 输出 JSON 解析失败：{e}", "raw": content[:400]}
+        else:
+            return {"ok": False, "error": "LLM 输出没有 JSON 结构", "raw": content[:400]}
+
+    verdict = str(parsed.get("verdict", "")).lower().strip()
+    if verdict not in ("good", "needs_review", "bad"):
+        return {"ok": False, "error": f"verdict 非法：{verdict}", "raw": content[:400]}
+    reason = str(parsed.get("reason", "")).strip()[:500]
+
+    return {
+        "ok": True,
+        "page_id": request.page_id,
+        "verdict": verdict,
+        "reason": reason,
+        "model_used": model_used,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2026-04-25 amis-translator 接口（确定性翻译器，详见 docs/architecture/amis-translator-pipeline.md）
 # ─────────────────────────────────────────────────────────────────────────────
