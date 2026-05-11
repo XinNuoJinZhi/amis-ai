@@ -203,6 +203,17 @@ async fn main() {
         "CREATE INDEX IF NOT EXISTS idx_code_samples_tags        ON code_samples USING GIN (tags)"
     ).await;
 
+    // 1.4 B.1 双路召回：code_samples 加 keyword_index text[] + GIN 索引
+    // 入库时由 Python keyword_extractor 从 amis_json 提关键字（type/subType/api）
+    // 召回时与 query_amis_json 提取的关键字做交集，每命中 +0.06，上限 +0.3
+    let _ = db.execute_unprepared(
+        "ALTER TABLE code_samples
+            ADD COLUMN IF NOT EXISTS keyword_index text[] NOT NULL DEFAULT '{}'"
+    ).await;
+    let _ = db.execute_unprepared(
+        "CREATE INDEX IF NOT EXISTS idx_code_samples_keyword_index ON code_samples USING GIN (keyword_index)"
+    ).await;
+
     // 2026-04 RAG 质量闭环：code_samples 加反馈/评分/评委/负例列（全部可空，幂等）
     //   - thumbs_up/down：admin 双向反馈计数（Phase 1 埋点 only，默认不进 ranking）
     //   - rating / rating_note / rating_by / rating_at：人工 0-5 主观评分（null=未评）

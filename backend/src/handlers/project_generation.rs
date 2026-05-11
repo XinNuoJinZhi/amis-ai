@@ -1694,6 +1694,9 @@ async fn fetch_rag_extra_sections(
 
     // amis_json 太长会拖慢向量化；摘要用前 2KB 就够语义检索了
     let query_text: String = amis_json.chars().take(2000).collect();
+    // 1.4 B.1 双路召回：提关键字需要完整 JSON 结构（type/subType/api 散布各处），
+    // 取前 32KB（足够覆盖多页项目；超过部分截断不影响主结构提取）
+    let query_amis_json: String = amis_json.chars().take(32768).collect();
 
     // 读 rag.* 配置（硬过滤 + 软加权 knob）。读失败走 default，不阻断主流程。
     use crate::handlers::system_settings::read_value_or;
@@ -1731,6 +1734,7 @@ async fn fetch_rag_extra_sections(
             "ui_libs": &ui_libs,
             "tech_stack": &legacy_tech_stack,
             "query_text": query_text,
+            "query_amis_json": query_amis_json,  // 1.4 B.1 双路召回
             "top_k": 3,
             "only_approved": true,
             "increment_hits": true,

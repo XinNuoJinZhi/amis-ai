@@ -118,6 +118,9 @@ class SearchCodeSamplesRequest(BaseModel):
     weighting_enabled: bool = False
     thumbs_mode: str = "tiebreaker"          # off / tiebreaker / boost
     hit_count_enabled: bool = False
+    # 1.4 B.1 双路召回：可选传当前任务的 amis_json 全文，Python 内部提关键字
+    # 与样例 keyword_index 做精确召回（type/subType/api 命中加分）；为空时退化纯向量
+    query_amis_json: str | None = None
 
 
 class SearchNegativeSamplesRequest(BaseModel):
@@ -167,6 +170,7 @@ async def search_code_samples_endpoint(
         weighting_enabled=request.weighting_enabled,
         thumbs_mode=request.thumbs_mode,
         hit_count_enabled=request.hit_count_enabled,
+        query_amis_json=request.query_amis_json,
     )
     if request.increment_hits and results:
         await increment_code_sample_hits([r["id"] for r in results])
