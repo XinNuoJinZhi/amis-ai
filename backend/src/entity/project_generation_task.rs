@@ -68,6 +68,12 @@ pub struct Model {
     /// 1.4 A.1：分类器置信度 0-1（<0.5 不参与路由偏置）
     #[sea_orm(column_type = "Float", nullable)]
     pub category_confidence: Option<f32>,
+
+    // 1.4 A.3：成本预算
+    /// 创建时预估的 token 成本（用于 quota 预扣 + 超额判断）
+    pub estimated_cost_tokens: Option<i32>,
+    /// 任务完成后从 LLM provider response 累加的真实成本（W4 接入实际写入）
+    pub actual_cost_tokens: Option<i32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

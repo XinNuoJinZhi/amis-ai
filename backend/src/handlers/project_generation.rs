@@ -232,8 +232,57 @@ pub async fn create_task(
         }
     };
 
+    // -0.25. 1.4 A.3：成本预算检查
+    //   - 估算 cost（粗粒度公式，单位 token）
+    //   - 调 check_and_consume_quota 预扣
+    //   - reject 模式超额 → 直接返回 429
+    //   - downgrade 模式超额 → 设 force_tier="fast"，select_for_task 强制锁档
+    let estimated_cost = crate::services::quota::estimate_task_cost(
+        &payload.amis_json,
+        payload.extra_prompt.as_deref(),
+        None, // complexity_score 由 LLM 决策时算，这里粗估即可
+    );
+    let quota_decision = match crate::services::quota::check_and_consume_quota(
+        &state,
+        user.id,
+        estimated_cost,
+    )
+    .await
+    {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("quota check 失败（放行）: {}", e);
+            // 配额服务异常时不阻断主流程（fail-open，避免误伤）
+            crate::services::quota::QuotaDecision {
+                over_budget: false,
+                reject: false,
+                used_today: 0,
+                daily_budget: 0,
+                reason: format!("quota service error (fail-open): {}", e),
+            }
+        }
+    };
+    if quota_decision.reject {
+        return (
+            StatusCode::from_u16(429).unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+            Json(json!({
+                "error": "今日 token 预算已用完",
+                "used_today": quota_decision.used_today,
+                "daily_budget": quota_decision.daily_budget,
+                "reason": quota_decision.reason,
+            })),
+        )
+            .into_response();
+    }
+    let force_tier: Option<&str> = if quota_decision.over_budget {
+        Some("fast") // downgrade：强制 fast 档
+    } else {
+        None
+    };
+
     // 0. 先决策本次任务用哪个 LLM（manual / auto / default）
     //    1.4 A.2：把 category + confidence 传入，auto 模式按 category 偏置覆盖 tier 决策
+    //    1.4 A.3：传 force_tier，over_budget 时强制 fast 降级
     let decision = match llm_selector::select_for_task(
         &state,
         user.id,
@@ -243,6 +292,7 @@ pub async fn create_task(
         payload.llm_model_name.as_deref(),
         task_category.as_deref(),
         task_category_confidence,
+        force_tier,
     )
     .await
     {
@@ -294,6 +344,9 @@ pub async fn create_task(
         complexity_score: Set(decision.complexity_score),
         category: Set(task_category.clone()),
         category_confidence: Set(task_category_confidence),
+        // 1.4 A.3：成本预算字段
+        estimated_cost_tokens: Set(Some(estimated_cost)),
+        actual_cost_tokens: Set(None), // W4 接 LLM response usage 字段时填
         ..Default::default()
     };
 

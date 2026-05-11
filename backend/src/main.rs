@@ -296,6 +296,9 @@ async fn main() {
          ('llm.routing.category_tier_overrides_json',
                                               '{\"static_page\":\"fast\",\"data_table\":\"balanced\",\"multipage_dashboard\":\"strong\",\"oa_form\":\"strong\",\"ecommerce\":\"strong\",\"admin_settings\":\"balanced\",\"zc_business\":\"strong\"}',
                                                               '1.4 A.2：业务类别 → tier 覆盖表（auto 模式按 category 覆盖 score 决策；__other__ 不配则保持原 score 路径）', NOW()),
+         ('llm.quota.enabled',               'false',         '1.4 A.3：总闸 — true 启用用户 token 配额（默认关闭，admin 评估后开启）', NOW()),
+         ('llm.quota.default_daily_budget',  '100000',        '1.4 A.3：用户首次访问时的默认日 token 预算（user_token_quota 行未存在时初始化用）', NOW()),
+         ('llm.quota.over_budget_action',    'downgrade',     '1.4 A.3：超额行为 downgrade（强制 fast 档跑）/ reject（直接 429）', NOW()),
          ('rag.negative.enabled',            'false',         '总闸：RAG 召回是否额外注入负例', NOW()),
          ('rag.negative.top_k',              '1',             '最多注入几条负例', NOW()),
          ('rag.negative.only_structural',    'true',          '仅注入 negative_kind=structural 的（避 LLM negation blindness）', NOW()),
@@ -403,9 +406,11 @@ async fn main() {
             ADD COLUMN IF NOT EXISTS llm_mode VARCHAR(16) NOT NULL DEFAULT 'default',
             ADD COLUMN IF NOT EXISTS llm_provider_id INTEGER,
             ADD COLUMN IF NOT EXISTS llm_model_name TEXT,
-            ADD COLUMN IF NOT EXISTS complexity_score   FLOAT,
-            ADD COLUMN IF NOT EXISTS category           VARCHAR(32),
-            ADD COLUMN IF NOT EXISTS category_confidence FLOAT"
+            ADD COLUMN IF NOT EXISTS complexity_score    FLOAT,
+            ADD COLUMN IF NOT EXISTS category            VARCHAR(32),
+            ADD COLUMN IF NOT EXISTS category_confidence FLOAT,
+            ADD COLUMN IF NOT EXISTS estimated_cost_tokens INT,
+            ADD COLUMN IF NOT EXISTS actual_cost_tokens    INT"
     ).await;
     // 2026-04（性能优化）：为 auto 模式的 30 天历史成功率聚合 SQL + 常规 list_tasks 查询补复合索引
     //   - idx_pgt_user_created_provider：加速 llm_selector::fetch_history_success_rates 的
@@ -430,6 +435,21 @@ async fn main() {
     let _ = db.execute_unprepared(
         "ALTER TABLE users
             ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE"
+    ).await;
+
+    // 1.4 A.3：用户 token 成本预算表
+    //   - 每用户独立配额，默认值从 system_settings 读
+    //   - used_today 在每次 task 创建时累加 estimated_cost_tokens
+    //   - reset_at 过 24h 自动归零（无需 cron，惰性 reset）
+    let _ = db.execute_unprepared(
+        "CREATE TABLE IF NOT EXISTS user_token_quota (
+            user_id       INT       PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            daily_budget  INT       NOT NULL DEFAULT 100000,
+            used_today    INT       NOT NULL DEFAULT 0,
+            reset_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+            created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at    TIMESTAMP NOT NULL DEFAULT NOW()
+        )"
     ).await;
     // 内置 admin 账号补回管理员权限（兼容已有数据库）
     let _ = db.execute_unprepared(
