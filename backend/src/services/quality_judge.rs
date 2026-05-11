@@ -339,8 +339,7 @@ pub fn spawn_judge_for_sample(state: AppState, sample_id: i32, trigger: &'static
 ///   1. 累积「页通过率」评测维度（与 dev_start 成功率交叉验证）
 ///   2. bad page 让 admin 决定是否回流为 is_negative=true 的 code_sample（手动操作，不自动）
 ///
-/// W3 接 multipage_scheduler 完成 page hook 后触发；W2 仅基建就位。
-#[allow(dead_code)]
+/// W3 接通：multipage_scheduler 在 page 完成时 fire-and-forget 调用本函数。
 pub fn spawn_judge_for_page(state: AppState, page_id: i32, trigger: &'static str) {
     tokio::spawn(async move {
         // 1. 总闸：page_mode = disabled 时直接 skip（不写 audit，page 级评是过程指标）

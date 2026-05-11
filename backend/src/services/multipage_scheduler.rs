@@ -693,6 +693,14 @@ async fn run_isolated_pages_with_shared_context(
                 }
                 .update(&state.db)
                 .await;
+                // 1.4 B.3b：page 完成 hook → 触发 LLM 评委评 amis schema
+                //   spawn 内部读 rag.judge.page_mode 总闸（默认 disabled，admin 启用后生效）
+                //   fire-and-forget，不阻塞主调度；评委结果回写 page_quality_*
+                crate::services::quality_judge::spawn_judge_for_page(
+                    state.clone(),
+                    page_id,
+                    "page_done",
+                );
                 format!("page_done:{page_idx}")
             }
             Err(err) => {
