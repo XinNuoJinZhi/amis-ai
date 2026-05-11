@@ -73,6 +73,10 @@ pub struct TaskSkillContext<'a> {
     pub explicit_buckets: &'a [String],
     /// 兼容期：前端只传 `tech_stack: "uniapp-wot-h5"` 时走这里
     pub legacy_stack: Option<&'a str>,
+    /// 1.3.2 引入：template 的 default_skill_buckets（由 backend 从 registry.yaml 透传，
+    /// 让 kind=knowledge 桶能按 template 自动激活；现状走 explicit_buckets 路径同效，
+    /// 这里保留独立字段以便未来 backend 改为分别下发 explicit vs default 时 fan-out 清晰）
+    pub template_default_buckets: &'a [String],
 }
 
 impl<'a> TaskSkillContext<'a> {
@@ -85,6 +89,7 @@ impl<'a> TaskSkillContext<'a> {
             template_name: None,
             explicit_buckets: &[],
             legacy_stack: Some(current_stack),
+            template_default_buckets: &[],
         }
     }
 }
@@ -434,6 +439,17 @@ fn select_buckets(buckets: &[SkillBucketInfo], ctx: &TaskSkillContext) -> HashSe
     } else {
         // 3. 按维度叠加
         append_by_dimension(buckets, ctx, &mut selected);
+    }
+
+    // 3.5 template.default_skill_buckets 兜底（1.3.2 引入，与 backend resolve_selected_buckets 对齐）
+    // kind=knowledge 桶（platform-zc-web / zc-amis-schema / platform-zc-mobile 等）维度 selector
+    // 命不中，必须靠 template default 显式激活。explicit_buckets 路径优先级最高，本步不覆盖。
+    if ctx.explicit_buckets.is_empty() {
+        for name in ctx.template_default_buckets {
+            if buckets.iter().any(|b| &b.dir_name == name) {
+                selected.insert(name.clone());
+            }
+        }
     }
 
     // 4. 无模板 → 追加 scaffold-from-scratch
@@ -808,6 +824,7 @@ priority: 50\n\
             template_name: Some("react-antd-vite-template"),
             explicit_buckets: &[],
             legacy_stack: None,
+            template_default_buckets: &[],
         };
 
         let sections = build_skills_system_prompt_v2(root, &[], &ctx);
@@ -863,6 +880,7 @@ priority: 50\n\
             template_name: None, // 无模板
             explicit_buckets: &[],
             legacy_stack: None,
+            template_default_buckets: &[],
         };
         let sections = build_skills_system_prompt_v2(root, &[], &ctx);
         let joined = sections.join("\n---\n");
@@ -895,6 +913,7 @@ priority: 50\n\
             template_name: Some("any"),
             explicit_buckets: &explicit,
             legacy_stack: None,
+            template_default_buckets: &[],
         };
         let sections = build_skills_system_prompt_v2(root, &[], &ctx);
         let joined = sections.join("\n---\n");
@@ -927,6 +946,7 @@ priority: 50\n\
             template_name: Some("x"),
             explicit_buckets: &[],
             legacy_stack: None,
+            template_default_buckets: &[],
         };
         let sections = build_skills_system_prompt_v2(root, &[], &ctx);
         let joined = sections.join("\n---\n");
@@ -959,6 +979,7 @@ priority: 50\n\
             template_name: Some("x"),
             explicit_buckets: &explicit,
             legacy_stack: None,
+            template_default_buckets: &[],
         };
         let sections = build_skills_system_prompt_v2(root, &[], &ctx);
         let joined = sections.join("\n---\n");

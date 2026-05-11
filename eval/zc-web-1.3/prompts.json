@@ -25,6 +25,26 @@
       ]
     },
     {
+      "id": "zc_p4_oa_workflow_3pages",
+      "title": "ZC OA 工作流三页（启动+流转+我的待办）",
+      "_note": "1.3.2 补集：覆盖 ZC OA 工作流套件（flowCreate + 我的待办 backlog + 部门审批人）",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"发起请假申请\",\"body\":[{\"type\":\"form\",\"api\":\"app://workflow/leave/start\",\"controls\":[{\"name\":\"type\",\"label\":\"假别\",\"type\":\"select\",\"options\":[\"年假\",\"事假\",\"病假\",\"调休\"],\"required\":true},{\"name\":\"startDate\",\"label\":\"开始日期\",\"type\":\"date\",\"required\":true},{\"name\":\"endDate\",\"label\":\"结束日期\",\"type\":\"date\",\"required\":true},{\"name\":\"days\",\"label\":\"天数\",\"type\":\"number\",\"required\":true},{\"name\":\"reason\",\"label\":\"事由\",\"type\":\"textarea\",\"required\":true},{\"name\":\"approver\",\"label\":\"审批人\",\"type\":\"user-select\",\"required\":true},{\"name\":\"cc\",\"label\":\"抄送\",\"type\":\"user-select\",\"multiple\":true}],\"submit\":{\"label\":\"提交并启动工作流\",\"actionType\":\"flowCreate\",\"flowId\":\"leave_apply\"}}]}", "route_path": "/oa/leave/start"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"申请详情与流转\",\"body\":[{\"type\":\"tpl\",\"tpl\":\"请假类型：${type}\"},{\"type\":\"tpl\",\"tpl\":\"时段：${startDate} ~ ${endDate}（${days} 天）\"},{\"type\":\"tpl\",\"tpl\":\"事由：${reason}\"},{\"type\":\"tpl\",\"tpl\":\"当前节点：${currentNode}\"},{\"type\":\"crud\",\"title\":\"流转记录\",\"api\":\"app://workflow/instance/history\",\"columns\":[{\"name\":\"node\",\"label\":\"节点\"},{\"name\":\"handler\",\"label\":\"处理人\"},{\"name\":\"action\",\"label\":\"动作\"},{\"name\":\"comment\",\"label\":\"意见\"},{\"name\":\"time\",\"label\":\"时间\",\"type\":\"datetime\"}]},{\"type\":\"button\",\"label\":\"撤回\",\"actionType\":\"ajax\",\"api\":\"app://workflow/instance/revoke\"}]}", "route_path": "/oa/leave/detail"},
+        {"amis_json": "{\"type\":\"modeltable\",\"title\":\"我的待办\",\"api\":\"app://workflow/backlog/mine\",\"columns\":[{\"name\":\"flowType\",\"label\":\"流程类型\"},{\"name\":\"applicant\",\"label\":\"申请人\"},{\"name\":\"summary\",\"label\":\"摘要\"},{\"name\":\"createdAt\",\"label\":\"创建时间\",\"type\":\"datetime\"}],\"filter\":{\"type\":\"form\",\"controls\":[{\"name\":\"flowType\",\"label\":\"流程类型\",\"type\":\"select\",\"options\":[\"请假\",\"报销\",\"采购\",\"用印\"]},{\"name\":\"dateRange\",\"label\":\"日期\",\"type\":\"date-range\"}]},\"itemActions\":[{\"label\":\"批准\",\"actionType\":\"ajax\",\"api\":\"app://workflow/approve\"},{\"label\":\"驳回\",\"actionType\":\"dialog\",\"dialog\":{\"type\":\"form\",\"controls\":[{\"name\":\"comment\",\"label\":\"驳回理由\",\"type\":\"textarea\",\"required\":true}]}}]}", "route_path": "/oa/backlog"}
+      ]
+    },
+    {
+      "id": "zc_p5_oa_dept_3pages",
+      "title": "ZC OA 组织架构三页（部门树+人员+角色权限）",
+      "_note": "1.3.2 补集：覆盖 ZC OA 组织套件（department-select 嵌套树 + user-select 多选 + 角色权限矩阵）",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"组织架构\",\"body\":[{\"type\":\"flex\",\"items\":[{\"type\":\"tree\",\"label\":\"部门\",\"source\":\"app://department/tree\",\"valueField\":\"id\",\"labelField\":\"name\",\"width\":280},{\"type\":\"modeltable\",\"title\":\"部门成员\",\"api\":\"app://employee/list?deptId=${deptId}\",\"columns\":[{\"name\":\"avatar\",\"type\":\"avatar\"},{\"name\":\"name\",\"label\":\"姓名\"},{\"name\":\"position\",\"label\":\"职位\"},{\"name\":\"email\",\"label\":\"邮箱\"},{\"name\":\"phone\",\"label\":\"电话\"},{\"name\":\"role\",\"label\":\"角色\"}],\"headerToolbar\":[{\"type\":\"button\",\"label\":\"新增成员\",\"actionType\":\"dialog\"}]}]}]}", "route_path": "/oa/org"},
+        {"amis_json": "{\"type\":\"modelform\",\"title\":\"人员档案\",\"api\":\"app://employee/save\",\"controls\":[{\"name\":\"name\",\"label\":\"姓名\",\"type\":\"text\",\"required\":true},{\"name\":\"employeeNo\",\"label\":\"工号\",\"type\":\"text\",\"required\":true,\"unique\":true},{\"name\":\"department\",\"label\":\"所属部门\",\"type\":\"department-select\",\"required\":true},{\"name\":\"manager\",\"label\":\"直接主管\",\"type\":\"user-select\"},{\"name\":\"hireDate\",\"label\":\"入职日期\",\"type\":\"date\",\"required\":true},{\"name\":\"position\",\"label\":\"职位\",\"type\":\"text\"},{\"name\":\"roles\",\"label\":\"角色\",\"type\":\"checkboxes\",\"source\":\"app://role/list\"}]}", "route_path": "/oa/employee/edit"},
+        {"amis_json": "{\"type\":\"modeltable\",\"title\":\"角色权限\",\"api\":\"app://role/list\",\"columns\":[{\"name\":\"name\",\"label\":\"角色名\"},{\"name\":\"code\",\"label\":\"代码\"},{\"name\":\"userCount\",\"label\":\"人数\"},{\"name\":\"permissions\",\"label\":\"权限数\"},{\"name\":\"updatedAt\",\"label\":\"更新时间\",\"type\":\"datetime\"}],\"itemActions\":[{\"label\":\"权限编辑\",\"actionType\":\"dialog\",\"dialog\":{\"type\":\"form\",\"controls\":[{\"name\":\"permissions\",\"label\":\"权限\",\"type\":\"transfer\",\"source\":\"app://permission/all\"}]}}]}", "route_path": "/oa/role"}
+      ]
+    },
+    {
       "id": "zc_p3_workorder_3pages",
       "title": "ZC 工单 CRUD 三页（列表+详情+动态表单提交）",
       "_note": "覆盖 ZC 特征：dynamic-form（schema 由后端返回）+ flowCreate（启动工作流）",

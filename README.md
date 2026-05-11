@@ -6,17 +6,23 @@
 ![stack](https://img.shields.io/badge/stack-Rust%20%7C%20Python%20%7C%20React-blue)
 ![stage](https://img.shields.io/badge/stage-MVP-orange)
 
-amis-ai 把「用自然语言描述需求」这件事做到底：**正向**让 AI 吐出 [Amis JSON](https://aisuda.bce.baidu.com/amis/zh-CN/docs) 界面配置，**反向**再把 Amis JSON 翻译回可运行、可采纳、可回流的 UniApp + Wot UI H5 项目。两条链路通过 RAG 知识库闭环，**越用越聪明**。
+amis-ai 把「用自然语言描述需求」这件事做到底：**正向**让 AI 吐出 [Amis JSON](https://aisuda.bce.baidu.com/amis/zh-CN/docs) 界面配置，**反向**再把 Amis JSON 翻译回可运行、可采纳、可回流的多端项目。**1.3 起支持原生 Amis + ZC 智搭低代码平台双轨**，Web/小程序双端同套知识库。两条链路通过 RAG 知识库闭环，**越用越聪明**。
 
 ---
 
 ## ✨ 项目亮点
 
 - 🔄 **正向飞轮**：自然语言 → Amis JSON，支持实时预览、编辑、采纳入库
-- 🏗️ **反向飞轮**：Amis JSON → UniApp + Wot UI H5 可运行项目（MVP）
+- 🏗️ **反向飞轮**（1.3 起 **4 模板可选**）：Amis JSON → 多端可运行项目
+  - `uniapp-wot-h5-template`（移动端 H5，1.2 稳定）
+  - `react-antd-vite-template`（Web 端，Antd Pro 风）
+  - `zc-editor-web-template`（**ZC 智搭 Web**，含 amis 6.8.0 二开版 + 121 个 ZC 二开组件，1.3.0 引入）
+  - `zc-uniapp-mobile-template`（**ZC 智搭 小程序**，shopro 电商套件 + uniapp + Wot，1.3.1 引入）
   - 在服务端 Docker 沙箱中**真实生成 + 启动 + 自修复**
-  - Vite dev server 启动失败自动读错误日志修复，最多 5 次重试
-  - 成功采纳的代码沉淀回 `code_sample` 表，RAG 飞轮闭环
+  - 多页面 5 策略复用（R4/R2/R1/R3/Unified）+ 自动评测 + RAG 飞轮闭环
+- 🧠 **ZC 智搭融入**（1.3）
+  - ZC 双轨知识库：121 个二开组件 schema references + 73 条业务样例，按 template 自动激活
+  - sandbox-service 改 per-create image 路由，按模板挂不同镜像（zc-web-node20 / uniapp-node20）
 - 💻 **云端 IDE**：类 VSCode 的**六合一工作区**（文件树 / Monaco / 终端 / 浏览器控制台 / 预览 / Chat）
   - 沙箱内文件直接读写 + xterm.js 终端 + iframe 预览 console 注入回传
   - 用户可点「塞入对话」把浏览器 console / 终端日志作为诊断证据交给 Agent
@@ -90,7 +96,12 @@ amis-ai 把「用自然语言描述需求」这件事做到底：**正向**让 A
 
 ```bash
 docker-compose up -d            # postgres + nginx
-docker images | grep sandbox    # 确认沙箱镜像：amis-ai-sandbox:uniapp-node20
+docker images | grep sandbox    # 沙箱镜像：amis-ai-sandbox:uniapp-node20（必装）
+                                # 选装：amis-ai-sandbox:zc-web-node20（ZC Web 模板用，1.3 引入）
+
+# 缺哪个就 build：
+# cd shared/docker/sandbox/uniapp-node20 && docker build -t amis-ai-sandbox:uniapp-node20 .
+# cd shared/docker/sandbox/zc-web-node20 && docker build -t amis-ai-sandbox:zc-web-node20 .
 ```
 
 ### 2. 体检 + 一键启 4 服务

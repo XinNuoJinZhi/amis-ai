@@ -101,6 +101,18 @@ LLM 拿到 Amis JSON 翻译成 uniapp + Wot 代码时：
 - `mp-weixin` 编译输出不能浏览器预览 → 评测走 `dev:h5` 模式即可
 - ZC 私有图表组件在 uniapp 端要换 `uchart` / `echarts-uniapp` 等开源替代
 
+## 按需检索的业务模式 references
+
+LLM 翻译 Amis JSON → uniapp 代码时按命中的 schema type **主动检索**对应模式（progressive disclosure 协议）：
+
+- `references/list-pattern.md` — Amis `crud` → uniapp z-paging + s-goods-card 列表
+- `references/detail-pattern.md` — Amis `page` + carousel/tpl/image → uniapp 详情布局
+- `references/form-pattern.md` — Amis `form` + controls → uniapp wd-form + 校验
+- `references/cart-pattern.md` — Amis `crud` + footerToolbar → uniapp 购物车 + 计价
+- `references/api-pattern.md` — Amis `api: "app://..."` → uniapp sheep/api 封装 + mock
+
+每个 reference 含「骨架代码 + 关键决策表 + scaffold 内可 Read 的同类参考页 + DO/DON'T」。
+
 ## 关联文档
 
 - ZC Web 平台桶：[../platform-zc-web/SKILL.md](../platform-zc-web/SKILL.md)（协议层共享）
