@@ -1,0 +1,100 @@
+{
+  "_comment": "1.6 W2 · B 项召回敏感评测 — 让 1.4 B.1 / 1.5 W4 修的双路召回真实价值显化",
+  "_goal": "B 组（dual_route=true）期望召回 ZC web 样本生成 ZC 模板代码；A 组（dual_route=false 纯向量）期望误抓普通 antd 样本，跑不起来",
+  "_indicators": "页通过率（B-A 差 ≥ 10pp）/ keyword_hits 命中率 / 失败 case 中 cos_sim 高 + kw=0 的比例",
+  "_dataset_design": "8 prompts × 3 pages = 24 pages；amis_json 大量含 ZC 二开特征（modeltable / report-forms / flowCreate / dynamic-form / user-select / department-select / treeselect），但 extra_prompt 用平淡通用业务描述，不出现 ZC / 模板 / 二开 / 工作流引擎 等字眼",
+  "_strategy_note": "建议跑 r4_baseline 独立 page 模式（对照最干净，不受 reuse 干扰）",
+  "_runner_hint_A": "(A 纯向量) admin PUT rag.dual_route.enabled=false → python3 eval/multipage-1.2/runner.py --prompts-file eval/1.6-recall-sensitive/prompts.json --strategies r4_baseline --tech-stack react-antd-vite --max-wait-sec 1200",
+  "_runner_hint_B": "(B 双路) admin PUT rag.dual_route.enabled=true  → 同上命令再跑一次",
+  "_compare_hint": "diff 两次 csv 的 page_status 列，统计 PASS 数 + keyword_hits 列均值",
+  "prompts": [
+    {
+      "id": "rs1_employee_directory",
+      "title": "RS1 · 内部员工目录与档案",
+      "_note": "amis 大量 modeltable + department-select + user-select；描述只说\"员工系统\"，不提 ZC / modeltable",
+      "_extra_prompt": "做一个公司内部员工目录系统，含人员列表、档案编辑、新增成员",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"员工列表\",\"body\":[{\"type\":\"modeltable\",\"api\":\"app://hr/employee/list\",\"filter\":{\"controls\":[{\"name\":\"deptId\",\"label\":\"部门\",\"type\":\"department-select\"},{\"name\":\"role\",\"label\":\"角色\",\"type\":\"select\",\"options\":[\"工程师\",\"产品\",\"销售\",\"HR\"]}]},\"columns\":[{\"name\":\"empNo\",\"label\":\"工号\"},{\"name\":\"name\",\"label\":\"姓名\"},{\"name\":\"department\",\"label\":\"部门\"},{\"name\":\"hireDate\",\"label\":\"入职日期\",\"type\":\"date\"}],\"itemActions\":[{\"label\":\"查看\",\"actionType\":\"link\",\"link\":\"/employees/detail\"}]}]}", "route_path": "/employees"},
+        {"amis_json": "{\"type\":\"modelform\",\"title\":\"员工档案\",\"api\":\"app://hr/employee/save\",\"controls\":[{\"name\":\"name\",\"label\":\"姓名\",\"type\":\"text\",\"required\":true},{\"name\":\"department\",\"label\":\"所属部门\",\"type\":\"department-select\",\"required\":true},{\"name\":\"manager\",\"label\":\"直接主管\",\"type\":\"user-select\"},{\"name\":\"hireDate\",\"label\":\"入职日期\",\"type\":\"date\",\"required\":true},{\"name\":\"position\",\"label\":\"职位\",\"type\":\"text\"}]}", "route_path": "/employees/edit"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"新增成员\",\"body\":[{\"type\":\"modelform\",\"api\":\"app://hr/employee/create\",\"controls\":[{\"name\":\"name\",\"label\":\"姓名\",\"type\":\"text\",\"required\":true},{\"name\":\"empNo\",\"label\":\"工号\",\"type\":\"text\",\"required\":true},{\"name\":\"department\",\"label\":\"部门\",\"type\":\"department-select\",\"required\":true},{\"name\":\"manager\",\"label\":\"汇报对象\",\"type\":\"user-select\"},{\"name\":\"email\",\"label\":\"邮箱\",\"type\":\"email\",\"required\":true}]}]}", "route_path": "/employees/new"}
+      ]
+    },
+    {
+      "id": "rs2_sales_bi_dashboard",
+      "title": "RS2 · 销售数据看板",
+      "_note": "amis 含 report-forms + chart 数据驱动；描述只说\"销售看板\"",
+      "_extra_prompt": "做一个销售数据看板，含日营收、Top10 商品、客户构成",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"运营驾驶舱\",\"body\":[{\"type\":\"report-forms\",\"id\":\"daily_revenue\",\"api\":\"app://bi/daily_revenue\",\"dimensions\":[\"date\"],\"metrics\":[\"orders\",\"revenue\"]},{\"type\":\"cards\",\"items\":[{\"title\":\"今日订单\",\"value\":128},{\"title\":\"今日营收\",\"value\":\"¥9876\"}]}]}", "route_path": "/dashboard"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"销售明细\",\"body\":[{\"type\":\"report-forms\",\"id\":\"sales_breakdown\",\"api\":\"app://bi/sales_breakdown\",\"dimensions\":[\"product\",\"channel\"],\"metrics\":[\"orders\",\"revenue\",\"refund\"]}]}", "route_path": "/dashboard/sales"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"客户构成\",\"body\":[{\"type\":\"report-forms\",\"id\":\"customer_breakdown\",\"api\":\"app://bi/customer_breakdown\",\"dimensions\":[\"region\",\"customer_type\"],\"metrics\":[\"count\",\"revenue\"]},{\"type\":\"chart\",\"api\":\"app://bi/customer_trend\",\"width\":800,\"height\":400}]}", "route_path": "/dashboard/customers"}
+      ]
+    },
+    {
+      "id": "rs3_oa_leave_flow",
+      "title": "RS3 · OA 请假流程",
+      "_note": "amis 含 flowCreate + user-select 抄送；描述只说\"OA 请假\"，不提工作流引擎 / 流程驱动",
+      "_extra_prompt": "做一个 OA 请假申请系统，含表单提交、审批流转、撤回",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"提交请假\",\"body\":[{\"type\":\"form\",\"api\":\"app://workflow/leave/start\",\"controls\":[{\"name\":\"type\",\"label\":\"假别\",\"type\":\"select\",\"options\":[\"年假\",\"事假\",\"病假\"],\"required\":true},{\"name\":\"period\",\"label\":\"时段\",\"type\":\"input-date-range\",\"required\":true},{\"name\":\"reason\",\"label\":\"事由\",\"type\":\"textarea\",\"required\":true},{\"name\":\"approver\",\"label\":\"审批人\",\"type\":\"user-select\",\"required\":true},{\"name\":\"cc\",\"label\":\"抄送\",\"type\":\"user-select\",\"multiple\":true}],\"submit\":{\"label\":\"提交并启动流程\",\"actionType\":\"flowCreate\",\"flowId\":\"leave_apply\"}}]}", "route_path": "/leave/start"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"流转详情\",\"body\":[{\"type\":\"tpl\",\"tpl\":\"假别：${type}\"},{\"type\":\"tpl\",\"tpl\":\"当前节点：${currentNode}\"},{\"type\":\"crud\",\"title\":\"流转记录\",\"api\":\"app://workflow/instance/history\",\"columns\":[{\"name\":\"node\",\"label\":\"节点\"},{\"name\":\"handler\",\"label\":\"处理人\"},{\"name\":\"action\",\"label\":\"动作\"},{\"name\":\"time\",\"label\":\"时间\",\"type\":\"datetime\"}]},{\"type\":\"button\",\"label\":\"撤回\",\"actionType\":\"ajax\",\"api\":\"app://workflow/instance/revoke\"}]}", "route_path": "/leave/detail"},
+        {"amis_json": "{\"type\":\"modeltable\",\"title\":\"我的待办\",\"api\":\"app://workflow/backlog/mine\",\"columns\":[{\"name\":\"flowType\",\"label\":\"流程\"},{\"name\":\"applicant\",\"label\":\"申请人\"},{\"name\":\"summary\",\"label\":\"摘要\"},{\"name\":\"createdAt\",\"label\":\"创建\",\"type\":\"datetime\"}],\"itemActions\":[{\"label\":\"批准\",\"actionType\":\"ajax\",\"api\":\"app://workflow/approve\"},{\"label\":\"驳回\",\"actionType\":\"dialog\"}]}", "route_path": "/leave/backlog"}
+      ]
+    },
+    {
+      "id": "rs4_workorder_dynamic",
+      "title": "RS4 · 客户服务工单（动态表单）",
+      "_note": "amis 含 dynamic-form schemaApi + flowCreate；描述只说\"客户服务\"",
+      "_extra_prompt": "做一个客户服务工单系统，含列表、详情、新建（表单不同类型字段不一样）",
+      "pages": [
+        {"amis_json": "{\"type\":\"modeltable\",\"title\":\"工单\",\"api\":\"app://workorder/list\",\"filter\":{\"controls\":[{\"name\":\"dept\",\"label\":\"部门\",\"type\":\"department-select\"},{\"name\":\"status\",\"label\":\"状态\",\"type\":\"select\",\"options\":[\"待处理\",\"处理中\",\"已完成\"]}]},\"columns\":[{\"name\":\"ticketNo\",\"label\":\"工单号\"},{\"name\":\"title\",\"label\":\"标题\"},{\"name\":\"assignee\",\"label\":\"处理人\"},{\"name\":\"status\",\"label\":\"状态\"}]}", "route_path": "/tickets"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"工单详情\",\"body\":[{\"type\":\"tpl\",\"tpl\":\"标题：${title}\"},{\"type\":\"tpl\",\"tpl\":\"描述：${description}\"},{\"type\":\"button\",\"label\":\"流转处理\",\"actionType\":\"flowCreate\",\"flowId\":\"ticket_handle\"}]}", "route_path": "/tickets/detail"},
+        {"amis_json": "{\"type\":\"dynamic-form\",\"title\":\"提交新工单\",\"schemaApi\":\"app://workorder/schema?type=${ticketType}\",\"api\":\"app://workorder/save\",\"initApi\":\"app://workorder/types\"}", "route_path": "/tickets/new"}
+      ]
+    },
+    {
+      "id": "rs5_crm_customer",
+      "title": "RS5 · 客户档案与销售记录",
+      "_note": "amis 含 modeltable + modelform + department-select + user-select；描述只说 CRM",
+      "_extra_prompt": "做一个 CRM 系统，含客户列表、档案、跟进记录",
+      "pages": [
+        {"amis_json": "{\"type\":\"modeltable\",\"title\":\"客户列表\",\"api\":\"app://crm/customer/list\",\"filter\":{\"controls\":[{\"name\":\"ownerDept\",\"label\":\"所属部门\",\"type\":\"department-select\"},{\"name\":\"owner\",\"label\":\"负责人\",\"type\":\"user-select\"},{\"name\":\"level\",\"label\":\"等级\",\"type\":\"select\",\"options\":[\"VIP\",\"普通\",\"潜在\"]}]},\"columns\":[{\"name\":\"name\",\"label\":\"客户\"},{\"name\":\"contact\",\"label\":\"联系人\"},{\"name\":\"owner\",\"label\":\"负责人\"},{\"name\":\"lastVisit\",\"label\":\"最近跟进\",\"type\":\"datetime\"}]}", "route_path": "/customers"},
+        {"amis_json": "{\"type\":\"modelform\",\"title\":\"客户档案\",\"api\":\"app://crm/customer/save\",\"controls\":[{\"name\":\"name\",\"label\":\"客户名称\",\"type\":\"text\",\"required\":true},{\"name\":\"contactPerson\",\"label\":\"联系人\",\"type\":\"user-select\"},{\"name\":\"ownerDept\",\"label\":\"所属部门\",\"type\":\"department-select\",\"required\":true},{\"name\":\"owner\",\"label\":\"负责人\",\"type\":\"user-select\",\"required\":true},{\"name\":\"tags\",\"label\":\"标签\",\"type\":\"checkboxes\",\"options\":[\"VIP\",\"渠道商\",\"潜在\"]}]}", "route_path": "/customers/edit"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"跟进记录\",\"body\":[{\"type\":\"modeltable\",\"api\":\"app://crm/customer/visit?customerId=${customerId}\",\"columns\":[{\"name\":\"visitDate\",\"label\":\"日期\",\"type\":\"date\"},{\"name\":\"visitor\",\"label\":\"拜访人\"},{\"name\":\"summary\",\"label\":\"摘要\"},{\"name\":\"nextStep\",\"label\":\"下一步\"}],\"headerToolbar\":[{\"type\":\"button\",\"label\":\"新增跟进\",\"actionType\":\"dialog\",\"dialog\":{\"type\":\"form\",\"controls\":[{\"name\":\"visitDate\",\"label\":\"日期\",\"type\":\"date\",\"required\":true},{\"name\":\"visitor\",\"label\":\"拜访人\",\"type\":\"user-select\",\"required\":true},{\"name\":\"summary\",\"label\":\"摘要\",\"type\":\"textarea\",\"required\":true}]}}]}]}", "route_path": "/customers/visits"}
+      ]
+    },
+    {
+      "id": "rs6_org_permission",
+      "title": "RS6 · 组织架构与权限矩阵",
+      "_note": "amis 含 tree + department-select 嵌套 + transfer 权限选择；描述只说\"权限管理\"",
+      "_extra_prompt": "做一个权限管理后台，含组织树、人员授权、角色编辑",
+      "pages": [
+        {"amis_json": "{\"type\":\"page\",\"title\":\"组织架构\",\"body\":[{\"type\":\"flex\",\"items\":[{\"type\":\"tree\",\"label\":\"部门\",\"source\":\"app://department/tree\",\"valueField\":\"id\",\"labelField\":\"name\",\"width\":280},{\"type\":\"modeltable\",\"title\":\"部门成员\",\"api\":\"app://employee/list?deptId=${deptId}\",\"columns\":[{\"name\":\"name\",\"label\":\"姓名\"},{\"name\":\"position\",\"label\":\"职位\"},{\"name\":\"role\",\"label\":\"角色\"}]}]}]}", "route_path": "/org"},
+        {"amis_json": "{\"type\":\"modelform\",\"title\":\"人员授权\",\"api\":\"app://employee/permission/save\",\"controls\":[{\"name\":\"user\",\"label\":\"用户\",\"type\":\"user-select\",\"required\":true},{\"name\":\"department\",\"label\":\"所属部门\",\"type\":\"department-select\"},{\"name\":\"roles\",\"label\":\"角色\",\"type\":\"checkboxes\",\"source\":\"app://role/list\"},{\"name\":\"permissions\",\"label\":\"权限\",\"type\":\"transfer\",\"source\":\"app://permission/all\"}]}", "route_path": "/org/grant"},
+        {"amis_json": "{\"type\":\"modeltable\",\"title\":\"角色\",\"api\":\"app://role/list\",\"columns\":[{\"name\":\"name\",\"label\":\"角色名\"},{\"name\":\"code\",\"label\":\"代码\"},{\"name\":\"userCount\",\"label\":\"人数\"},{\"name\":\"permissions\",\"label\":\"权限数\"}],\"itemActions\":[{\"label\":\"权限编辑\",\"actionType\":\"dialog\",\"dialog\":{\"type\":\"form\",\"controls\":[{\"name\":\"permissions\",\"label\":\"权限\",\"type\":\"transfer\",\"source\":\"app://permission/all\"}]}}]}", "route_path": "/org/roles"}
+      ]
+    },
+    {
+      "id": "rs7_asset_repair",
+      "title": "RS7 · 资产管理与报修工单",
+      "_note": "amis 含 treeselect + modeltable + dynamic-form；描述只说\"设备资产\"",
+      "_extra_prompt": "做一个固定资产管理系统，含资产列表、入库登记、报修工单",
+      "pages": [
+        {"amis_json": "{\"type\":\"modeltable\",\"title\":\"资产列表\",\"api\":\"app://asset/list\",\"filter\":{\"controls\":[{\"name\":\"category\",\"label\":\"类别\",\"type\":\"tree-select\",\"source\":\"app://asset/category/tree\"},{\"name\":\"dept\",\"label\":\"使用部门\",\"type\":\"department-select\"},{\"name\":\"status\",\"label\":\"状态\",\"type\":\"select\",\"options\":[\"在用\",\"闲置\",\"报废\"]}]},\"columns\":[{\"name\":\"assetNo\",\"label\":\"资产编号\"},{\"name\":\"name\",\"label\":\"名称\"},{\"name\":\"category\",\"label\":\"类别\"},{\"name\":\"value\",\"label\":\"原值\"},{\"name\":\"user\",\"label\":\"使用人\"}]}", "route_path": "/assets"},
+        {"amis_json": "{\"type\":\"modelform\",\"title\":\"资产入库\",\"api\":\"app://asset/save\",\"controls\":[{\"name\":\"name\",\"label\":\"资产名称\",\"type\":\"text\",\"required\":true},{\"name\":\"category\",\"label\":\"类别\",\"type\":\"tree-select\",\"source\":\"app://asset/category/tree\",\"required\":true},{\"name\":\"value\",\"label\":\"原值\",\"type\":\"input-number\",\"min\":0,\"required\":true},{\"name\":\"purchaseDate\",\"label\":\"购置日期\",\"type\":\"date\",\"required\":true},{\"name\":\"useDept\",\"label\":\"使用部门\",\"type\":\"department-select\",\"required\":true},{\"name\":\"user\",\"label\":\"使用人\",\"type\":\"user-select\"}]}", "route_path": "/assets/new"},
+        {"amis_json": "{\"type\":\"dynamic-form\",\"title\":\"提交报修\",\"schemaApi\":\"app://asset/repair/schema?category=${category}\",\"api\":\"app://asset/repair/save\",\"submit\":{\"label\":\"提交报修单\",\"actionType\":\"flowCreate\",\"flowId\":\"asset_repair\"}}", "route_path": "/assets/repair"}
+      ]
+    },
+    {
+      "id": "rs8_project_collab",
+      "title": "RS8 · 项目协作看板",
+      "_note": "amis 含 user-select 多选 + department-select + cards 看板；描述只说\"团队协作\"",
+      "_extra_prompt": "做一个团队协作工具，含项目列表、任务指派、进度看板",
+      "pages": [
+        {"amis_json": "{\"type\":\"modeltable\",\"title\":\"项目列表\",\"api\":\"app://project/list\",\"filter\":{\"controls\":[{\"name\":\"ownerDept\",\"label\":\"主导部门\",\"type\":\"department-select\"},{\"name\":\"lead\",\"label\":\"项目负责人\",\"type\":\"user-select\"},{\"name\":\"status\",\"label\":\"状态\",\"type\":\"select\",\"options\":[\"立项\",\"进行中\",\"已归档\"]}]},\"columns\":[{\"name\":\"name\",\"label\":\"项目名\"},{\"name\":\"lead\",\"label\":\"负责人\"},{\"name\":\"members\",\"label\":\"成员\"},{\"name\":\"progress\",\"label\":\"进度\",\"type\":\"progress\"}]}", "route_path": "/projects"},
+        {"amis_json": "{\"type\":\"modelform\",\"title\":\"任务指派\",\"api\":\"app://task/assign\",\"controls\":[{\"name\":\"projectId\",\"label\":\"项目\",\"type\":\"select\",\"source\":\"app://project/list\",\"required\":true},{\"name\":\"taskTitle\",\"label\":\"任务标题\",\"type\":\"text\",\"required\":true},{\"name\":\"assignees\",\"label\":\"指派给\",\"type\":\"user-select\",\"multiple\":true,\"required\":true},{\"name\":\"reviewer\",\"label\":\"审核人\",\"type\":\"user-select\"},{\"name\":\"deadline\",\"label\":\"截止日期\",\"type\":\"date\",\"required\":true}]}", "route_path": "/projects/tasks/assign"},
+        {"amis_json": "{\"type\":\"page\",\"title\":\"任务看板\",\"body\":[{\"type\":\"grid\",\"columns\":[{\"body\":[{\"type\":\"panel\",\"title\":\"待办\",\"body\":[{\"type\":\"cards\",\"source\":\"app://task/todo?projectId=${projectId}\"}]}]},{\"body\":[{\"type\":\"panel\",\"title\":\"进行中\",\"body\":[{\"type\":\"cards\",\"source\":\"app://task/wip?projectId=${projectId}\"}]}]},{\"body\":[{\"type\":\"panel\",\"title\":\"已完成\",\"body\":[{\"type\":\"cards\",\"source\":\"app://task/done?projectId=${projectId}\"}]}]}]}]}", "route_path": "/projects/board"}
+      ]
+    }
+  ]
+}

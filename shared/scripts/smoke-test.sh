@@ -465,6 +465,34 @@ assert_contains "$R10_5" "\"scaffold-from-scratch\"" "无模板时 resolve-skill
 
 echo ""
 
+# ───────────────── 11. 2026-05 1.6 W1 · A 项 page-bad 自动入库（3 条） ─────────────────
+echo ""
+echo "=== 11. 1.6 W1 · A 项：page-bad 自动入库链路 ==="
+
+# 11.1 总闸默认关（与 1.5 行为一致；admin 显式开启才生效）
+R11_1=$(curl -fs "${H[@]}" $BASE/api/system-settings/rag.judge.auto_page_negative \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["value"])' 2>/dev/null)
+assert_eq "$R11_1" "false" "rag.judge.auto_page_negative 默认 false"
+
+# 11.2 confidence 阈值默认 0.85
+R11_2=$(curl -fs "${H[@]}" $BASE/api/system-settings/rag.judge.auto_page_negative_min_confidence \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["value"])' 2>/dev/null)
+assert_eq "$R11_2" "0.85" "rag.judge.auto_page_negative_min_confidence 默认 0.85"
+
+# 11.3 GET /api/code-samples?status=pending_review 返回 200（不再报 400 invalid status）
+R11_3_CODE=$(curl -s -o /tmp/smoke-pending-review-$$.json -w '%{http_code}' \
+  "${H[@]}" "$BASE/api/code-samples?status=pending_review&page_size=1")
+assert_eq "$R11_3_CODE" "200" "GET code-samples?status=pending_review 返回 200"
+# 字段层兜底校验
+if grep -q '"items"' /tmp/smoke-pending-review-$$.json; then
+  pass "pending_review list 含 items 字段"
+else
+  fail "pending_review list 缺 items 字段（body=$(cat /tmp/smoke-pending-review-$$.json | head -c 200))"
+fi
+rm -f /tmp/smoke-pending-review-$$.json
+
+echo ""
+
 # ───────────────── 总结 ─────────────────
 echo "============================================"
 echo "  ✅ PASS: $PASS"

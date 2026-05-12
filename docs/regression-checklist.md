@@ -216,7 +216,55 @@ cp /tmp/amis-ai-logs/*.log /tmp/release-snapshot-$(date +%Y%m%d)/
 
 ---
 
-## 十、本清单未覆盖的（人工经验外的"未知未知"）
+## 十、1.5 / 1.6 W1 新功能人工回归（手动 · 5 分钟）
+
+> 这段是 1.5 + 1.6 W1 上线后新增项，smoke-test 已盖到接口表层，本节补人工感官回归。
+
+### 10.1 1.5 W2 · estimate vs actual cost 双列展示
+
+1. 跑一个简单任务（如「做一个员工列表」），等到 `succeeded`
+2. SQL 查：
+   ```sql
+   SELECT id, status, estimated_cost_tokens, actual_cost_tokens, accumulated_cost_tokens
+   FROM project_generation_task ORDER BY id DESC LIMIT 1;
+   ```
+3. 期望：`estimated_cost_tokens` > 0、`actual_cost_tokens` > 0、`accumulated_cost_tokens` ≥ actual
+
+### 10.2 1.5 W3 · A/B 路由（默认关 → 应无副作用）
+
+1. admin 看 `/api/system-settings/llm.routing.ab_test_enabled` 应为 false
+2. 检查最近 task 的 `ab_variant` 字段应该为 NULL
+3. 试探：把 ab_test_enabled 改 true，跑两个任务，看 ab_variant 是否在 ['a', 'b'] 二者；改回 false
+
+### 10.3 1.5 W4 / 1.4 B.1 · 双路召回（开关切换）
+
+1. admin 把 `rag.dual_route.enabled` 改为 false
+2. 跑一个多页任务，看 task 的 `analysis_input.md`（tracelog 归档）里 `rag_samples_injected.keyword_hits` 应该 = 0
+3. 切回 true，再跑一个，应该 > 0（前提样本库有命中关键字）
+
+### 10.4 1.6 W1 A · page-bad 自动入库（pending_review）
+
+1. admin 改 `rag.judge.page_mode` = `auto_on_complete`（启 page 评委）
+2. admin 改 `rag.judge.auto_page_negative` = `true`（开自动入库总闸）
+3. 跑一个**故意刁钻**的 prompt（如 amis JSON 故意缺 required name 字段），等任务完成
+4. SQL 看是否新出 `status='pending_review'` 行：
+   ```sql
+   SELECT id, status, is_negative, source_page_id, source_task_id, amis_json_summary
+   FROM code_samples WHERE status='pending_review' ORDER BY id DESC LIMIT 5;
+   ```
+5. 期望：行存在、`is_negative=true`、`source_page_id` 指向真实 page、`amis_json_summary` 以 `[auto page-bad]` 开头
+6. 跑完关掉两个 setting 还原默认（避免污染后续测试）
+
+### 10.5 1.6 W1 A · confidence 阈值生效
+
+1. 总闸开着，把 `rag.judge.auto_page_negative_min_confidence` 调到 `0.99`（接近不可达）
+2. 跑同样刁钻 prompt
+3. 期望：log 出现 `confidence < threshold, skip auto negative`，**不**新增 pending_review 行
+4. 调回 `0.85` 还原
+
+---
+
+## 十一、本清单未覆盖的（人工经验外的"未知未知"）
 
 - 长跑稳定性（24h+ 持续任务）
 - 并发任务（>3 个同时跑的资源占用）
