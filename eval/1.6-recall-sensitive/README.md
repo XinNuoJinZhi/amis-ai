@@ -48,45 +48,58 @@
 
 ```bash
 # 1. admin 关掉 dual_route 总闸
-curl -X PUT http://localhost:8080/api/admin/system-settings/rag.dual_route.enabled \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
+TOKEN=$(curl -fs -X POST http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin123"}' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+curl -X PUT "http://localhost:8080/api/system-settings/rag.dual_route.enabled" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"value":"false"}'
 
-# 2. 跑评测
-python3 eval/multipage-1.2/runner.py \
+# 2. 跑评测（runner 自动写 eval/multipage-1.2/results-<timestamp>.csv|.md）
+TEST_ADMIN_JWT="$TOKEN" python3 eval/multipage-1.2/runner.py \
   --prompts-file eval/1.6-recall-sensitive/prompts.json \
   --strategies r4_baseline \
   --tech-stack react-antd-vite \
-  --output-csv eval/1.6-recall-sensitive/run-a-vector-only.csv \
   --max-wait-sec 1200
+
+# 3. 跑完把产物搬到本目录方便后续对比
+LATEST=$(ls -t eval/multipage-1.2/results-*.csv | head -1)
+cp "$LATEST" eval/1.6-recall-sensitive/run-a-vector-only.csv
+cp "${LATEST%.csv}.md" eval/1.6-recall-sensitive/run-a-vector-only.md
 ```
 
 ### B 组（双路召回）
 
 ```bash
 # 1. admin 开 dual_route
-curl -X PUT http://localhost:8080/api/admin/system-settings/rag.dual_route.enabled \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
+curl -X PUT "http://localhost:8080/api/system-settings/rag.dual_route.enabled" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"value":"true"}'
 
 # 2. 跑评测
-python3 eval/multipage-1.2/runner.py \
+TEST_ADMIN_JWT="$TOKEN" python3 eval/multipage-1.2/runner.py \
   --prompts-file eval/1.6-recall-sensitive/prompts.json \
   --strategies r4_baseline \
   --tech-stack react-antd-vite \
-  --output-csv eval/1.6-recall-sensitive/run-b-dual-route.csv \
   --max-wait-sec 1200
+
+# 3. 拷贝产物
+LATEST=$(ls -t eval/multipage-1.2/results-*.csv | head -1)
+cp "$LATEST" eval/1.6-recall-sensitive/run-b-dual-route.csv
+cp "${LATEST%.csv}.md" eval/1.6-recall-sensitive/run-b-dual-route.md
 ```
 
 ### 对比
 
 ```bash
-# 用 Python 算 PASS 率 + keyword_hits 均值
-python3 eval/multipage-1.2/compare.py \
-  --csv-a eval/1.6-recall-sensitive/run-a-vector-only.csv \
-  --csv-b eval/1.6-recall-sensitive/run-b-dual-route.csv
+# 直接 diff 两份 md / 用 awk 提 keyword_hits 列
+awk -F',' 'NR>1 {sum+=$N; n++} END {printf "A keyword_hits avg: %.2f / %d pages\n", sum/n, n}' \
+  eval/1.6-recall-sensitive/run-a-vector-only.csv
+awk -F',' 'NR>1 {sum+=$N; n++} END {printf "B keyword_hits avg: %.2f / %d pages\n", sum/n, n}' \
+  eval/1.6-recall-sensitive/run-b-dual-route.csv
 ```
 
 ---
