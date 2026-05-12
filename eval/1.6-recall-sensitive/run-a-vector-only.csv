@@ -1,0 +1,9 @@
+prompt_id,prompt_title,page_count,strategy,execution_strategy,reuse_strategy,runner_wall_sec,task_id,task_status,pages_done,pages_total,pass_rate,reuse_rate,import_count,file_count,llm_calls,llm_total_ms,total_dur_sec,rag_ok
+rs1_employee_directory,RS1 · 内部员工目录与档案,3,r4_baseline,isolated,r4_none,79.6,315,succeeded,3,3,1.0,0.0,0,3,37,72252,65,True
+rs2_sales_bi_dashboard,RS2 · 销售数据看板,3,r4_baseline,isolated,r4_none,19.1,316,succeeded,3,3,1.0,0.0,0,3,26,30353,15,True
+rs3_oa_leave_flow,RS3 · OA 请假流程,3,r4_baseline,isolated,r4_none,30.4,317,succeeded,3,3,1.0,0.0,0,3,24,43708,26,True
+rs4_workorder_dynamic,RS4 · 客户服务工单（动态表单）,3,r4_baseline,isolated,r4_none,33.8,318,succeeded,3,3,1.0,0.0,0,3,28,39613,20,True
+rs5_crm_customer,RS5 · 客户档案与销售记录,3,r4_baseline,isolated,r4_none,103.9,319,succeeded,3,3,1.0,0.0,0,3,50,80271,92,True
+rs6_org_permission,RS6 · 组织架构与权限矩阵,3,r4_baseline,isolated,r4_none,64.2,320,succeeded,3,3,1.0,0.0,0,2,38,55424,60,True
+rs7_asset_repair,RS7 · 资产管理与报修工单,3,r4_baseline,isolated,r4_none,35.6,321,succeeded,3,3,1.0,0.0,0,3,25,42902,25,True
+rs8_project_collab,RS8 · 项目协作看板,3,r4_baseline,isolated,r4_none,30.8,322,succeeded,3,3,1.0,0.0,0,3,32,61818,25,True

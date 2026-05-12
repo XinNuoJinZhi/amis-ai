@@ -64,10 +64,11 @@ TEST_ADMIN_JWT="$TOKEN" python3 eval/multipage-1.2/runner.py \
   --tech-stack react-antd-vite \
   --max-wait-sec 1200
 
-# 3. 跑完把产物搬到本目录方便后续对比
-LATEST=$(ls -t eval/multipage-1.2/results-*.csv | head -1)
-cp "$LATEST" eval/1.6-recall-sensitive/run-a-vector-only.csv
-cp "${LATEST%.csv}.md" eval/1.6-recall-sensitive/run-a-vector-only.md
+# 3. runner 实际把 CSV / MD 写到 prompts-file 的同目录（即 eval/1.6-recall-sensitive/）
+# 跑完后 mv 改名方便对比
+LATEST=$(ls -t eval/1.6-recall-sensitive/results-*.csv | head -1)
+mv "$LATEST" eval/1.6-recall-sensitive/run-a-vector-only.csv
+mv "${LATEST%.csv}.md" eval/1.6-recall-sensitive/run-a-vector-only.md
 ```
 
 ### B 组（双路召回）
@@ -86,10 +87,10 @@ TEST_ADMIN_JWT="$TOKEN" python3 eval/multipage-1.2/runner.py \
   --tech-stack react-antd-vite \
   --max-wait-sec 1200
 
-# 3. 拷贝产物
-LATEST=$(ls -t eval/multipage-1.2/results-*.csv | head -1)
-cp "$LATEST" eval/1.6-recall-sensitive/run-b-dual-route.csv
-cp "${LATEST%.csv}.md" eval/1.6-recall-sensitive/run-b-dual-route.md
+# 3. 改名归档
+LATEST=$(ls -t eval/1.6-recall-sensitive/results-*.csv | head -1)
+mv "$LATEST" eval/1.6-recall-sensitive/run-b-dual-route.csv
+mv "${LATEST%.csv}.md" eval/1.6-recall-sensitive/run-b-dual-route.md
 ```
 
 ### 对比
