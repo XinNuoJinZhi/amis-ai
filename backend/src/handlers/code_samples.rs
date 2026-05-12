@@ -317,10 +317,13 @@ pub async fn create_code_sample(
         Ok(u) => u,
         Err(e) => return e.into_response(),
     };
-    if !matches!(body.status.as_str(), "pending" | "approved" | "rejected") {
+    if !matches!(
+        body.status.as_str(),
+        "pending" | "pending_review" | "approved" | "rejected"
+    ) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "status 必须为 pending/approved/rejected"})),
+            Json(json!({"error": "status 必须为 pending/pending_review/approved/rejected"})),
         )
             .into_response();
     }
@@ -439,10 +442,13 @@ pub async fn update_code_sample(
         active.full_code = Set(v);
     }
     if let Some(v) = body.status {
-        if !matches!(v.as_str(), "pending" | "approved" | "rejected") {
+        if !matches!(
+            v.as_str(),
+            "pending" | "pending_review" | "approved" | "rejected"
+        ) {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "status 必须为 pending/approved/rejected"})),
+                Json(json!({"error": "status 必须为 pending/pending_review/approved/rejected"})),
             )
                 .into_response();
         }

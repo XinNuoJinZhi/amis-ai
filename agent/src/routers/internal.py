@@ -494,13 +494,21 @@ _PAGE_SCHEMA_JUDGE_PROMPT = """你是 amis 低代码产品的页面设计评委�
 输出严格 JSON（不加任何解释、不加 markdown fence）：
 {
   "verdict": "good" | "needs_review" | "bad",
-  "reason": "一句话解释（<=200字）"
+  "reason": "一句话解释（<=200字）",
+  "confidence": 0.0
 }
 
 verdict 含义：
   - good = 设计规范、API 协议齐、组件搭配合理，可直接生成业务代码
   - needs_review = 整体方向对但有瑕疵（如缺校验 / api 协议含糊），admin 复核
   - bad = 设计有明显问题（API 协议错 / 组件嵌套乱 / 关键字段缺），不应进入生产
+
+confidence：你对自己判断的把握度 [0.0, 1.0]
+  - 0.9+ = 几乎确定（明显错误，如 type 拼错 / api 协议缺失）
+  - 0.7-0.9 = 比较确定（结构有问题但样本少时见过）
+  - 0.5-0.7 = 较为不确定（介于"差但能改"和"勉强通过"之间）
+  - < 0.5 = 拿不准（建议给 needs_review）
+1.6 W1 · A：confidence 用于决定是否把 bad 自动回流为反面教材；低于阈值不入库。
 """
 
 
@@ -566,11 +574,19 @@ async def judge_page_schema_endpoint(
         return {"ok": False, "error": f"verdict 非法：{verdict}", "raw": content[:400]}
     reason = str(parsed.get("reason", "")).strip()[:500]
 
+    # 1.6 W1 · A：confidence 容错（旧模型不返回 → 0.5 默认值，低于阈值不会入库）
+    try:
+        confidence = float(parsed.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence = 0.5
+    confidence = max(0.0, min(1.0, confidence))
+
     return {
         "ok": True,
         "page_id": request.page_id,
         "verdict": verdict,
         "reason": reason,
+        "confidence": confidence,
         "model_used": model_used,
     }
 

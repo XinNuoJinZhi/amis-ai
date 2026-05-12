@@ -464,6 +464,10 @@ pub fn spawn_judge_for_page(state: AppState, page_id: i32, trigger: &'static str
             .unwrap_or(judge_model);
 
         // 8. 回填 project_task_page.page_quality_*
+        // 1.6 W1 · A：先把后面自动入库要用的字段克隆出来（into_active_model 会消费 page）
+        let page_task_id = page.task_id;
+        let page_route_path = page.route_path.clone();
+        let page_amis_json = page.amis_json.clone();
         let mut active = page.into_active_model();
         active.page_quality_verdict = Set(Some(verdict.to_string()));
         active.page_quality_reason = Set(Some(reason.clone()));
@@ -482,5 +486,237 @@ pub fn spawn_judge_for_page(state: AppState, page_id: i32, trigger: &'static str
             model_used,
             trigger,
         );
+
+        // 9. 1.6 W1 · A：bad page 自动入库 code_samples（pending_review + is_negative）
+        //    总闸默认 false（与 1.5 行为完全一致）；admin 显式开启后才生效。
+        //    confidence 低于阈值不入库（避免低质负例污染召回）。
+        if verdict == "bad" {
+            let auto_on = read_value_or(&state, "rag.judge.auto_page_negative", "false")
+                .await
+                .trim()
+                .eq_ignore_ascii_case("true");
+            if auto_on {
+                let confidence = body
+                    .get("confidence")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.5) // 旧模型不返回 → 0.5（< 默认阈值 0.85，不入库）
+                    .clamp(0.0, 1.0);
+                let min_conf: f64 = read_value_or(
+                    &state,
+                    "rag.judge.auto_page_negative_min_confidence",
+                    "0.85",
+                )
+                .await
+                .trim()
+                .parse()
+                .unwrap_or(0.85);
+                if confidence < min_conf {
+                    tracing::info!(
+                        "page judge {} verdict=bad but confidence {:.2} < threshold {:.2}, skip auto negative",
+                        page_id,
+                        confidence,
+                        min_conf,
+                    );
+                } else {
+                    let neg_kind = read_value_or(
+                        &state,
+                        "rag.judge.auto_page_negative_kind",
+                        "structural",
+                    )
+                    .await
+                    .trim()
+                    .to_string();
+                    auto_insert_page_negative(
+                        &state,
+                        page_id,
+                        page_task_id,
+                        &page_route_path,
+                        &page_amis_json,
+                        task_opt.as_ref(),
+                        verdict,
+                        &reason,
+                        confidence,
+                        &neg_kind,
+                        &model_used,
+                    )
+                    .await;
+                }
+            }
+        }
+    });
+}
+
+/// 1.6 W1 · A：把 bad page 作为反面教材入库（pending_review + is_negative=true）
+/// 失败仅日志，不抛——评委已经把 verdict 写回，这里失败不能反着回滚 verdict。
+async fn auto_insert_page_negative(
+    state: &AppState,
+    page_id: i32,
+    task_id: i32,
+    route_path: &str,
+    page_amis_json: &str,
+    task_opt: Option<&crate::entity::project_generation_task::Model>,
+    verdict: &str,
+    reason: &str,
+    confidence: f64,
+    negative_kind: &str,
+    judge_model: &str,
+) {
+    let (tech_stack, platforms, tech_stacks, ui_libs) = task_opt
+        .map(|t| {
+            (
+                t.tech_stack.clone(),
+                t.platforms.clone(),
+                t.tech_stacks.clone(),
+                t.ui_libs.clone(),
+            )
+        })
+        .unwrap_or_else(|| (String::new(), vec![], vec![], vec![]));
+
+    // 摘要：让 admin 在 list 页一眼看出是 page-bad 自动来的
+    let summary = format!(
+        "[auto page-bad] route={} · conf={:.2} · {}",
+        route_path,
+        confidence,
+        reason.chars().take(180).collect::<String>(),
+    );
+
+    // text[] 写入：用 SQL ARRAY[..] 字面量（避免 SeaORM 多维数组列的支持坑）
+    // 这里我们用 query/exec_unprepared 走 raw SQL，绕过 ActiveModel
+    fn pg_text_array(items: &[String]) -> String {
+        let escaped: Vec<String> = items
+            .iter()
+            .map(|s| format!("'{}'", s.replace('\'', "''")))
+            .collect();
+        format!("ARRAY[{}]::text[]", escaped.join(","))
+    }
+
+    let stmt = Statement::from_sql_and_values(
+        state.db.get_database_backend(),
+        format!(
+            "INSERT INTO code_samples (\
+                tech_stack, source_team, amis_json_summary, code_summary, \
+                full_amis_json, full_code, status, hit_count, \
+                source_task_id, source_page_id, \
+                platforms, tech_stacks, ui_libs, tags, \
+                is_negative, negative_kind, rejection_reason, \
+                quality_verdict, quality_reason, quality_judge_at, quality_judge_model, \
+                keyword_index, \
+                created_at, updated_at\
+             ) VALUES (\
+                $1, 'amis-ai', $2, NULL, \
+                $3, '', 'pending_review', 0, \
+                $4, $5, \
+                {platforms}, {tech_stacks}, {ui_libs}, ARRAY[]::text[], \
+                TRUE, $6, $7, \
+                $8, $9, NOW(), $10, \
+                ARRAY[]::text[], \
+                NOW(), NOW()\
+             ) RETURNING id",
+            platforms = pg_text_array(&platforms),
+            tech_stacks = pg_text_array(&tech_stacks),
+            ui_libs = pg_text_array(&ui_libs),
+        ),
+        vec![
+            tech_stack.into(),
+            summary.clone().into(),
+            page_amis_json.to_string().into(),
+            task_id.into(),
+            page_id.into(),
+            negative_kind.to_string().into(),
+            reason.to_string().into(),
+            verdict.to_string().into(),
+            reason.to_string().into(),
+            judge_model.to_string().into(),
+        ],
+    );
+
+    let inserted_id: Option<i32> = match state.db.query_one(stmt).await {
+        Ok(Some(row)) => row.try_get("", "id").ok(),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(
+                "auto_insert_page_negative {} INSERT failed: {}",
+                page_id,
+                e
+            );
+            return;
+        }
+    };
+    let sample_id = match inserted_id {
+        Some(id) => id,
+        None => {
+            tracing::warn!(
+                "auto_insert_page_negative {} INSERT no id returned",
+                page_id
+            );
+            return;
+        }
+    };
+
+    tracing::info!(
+        "auto inserted page-bad sample: sample_id={} from page_id={} task_id={} conf={:.2}",
+        sample_id,
+        page_id,
+        task_id,
+        confidence,
+    );
+
+    // audit：用 llm_judge 操作类型，action 用新值 auto_create_negative 便于追溯
+    record_audit(
+        &state.db,
+        sample_id,
+        None,
+        "llm_judge",
+        "auto_create_negative",
+        None,
+        Some(json!({
+            "status": "pending_review",
+            "is_negative": true,
+            "negative_kind": negative_kind,
+            "source_page_id": page_id,
+            "source_task_id": task_id,
+            "verdict": verdict,
+            "confidence": confidence,
+            "judge_model": judge_model,
+        })),
+        Some(format!(
+            "[auto] page judge verdict=bad (conf={:.2}) → 待 admin 复核",
+            confidence
+        )),
+    )
+    .await;
+
+    // fire-and-forget 触发向量化 + keyword 提取
+    let agent_url =
+        std::env::var("AGENT_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
+    let internal_key = std::env::var("INTERNAL_API_KEY").unwrap_or_default();
+    let http_client = state.http_client.clone();
+    let summary_clone = summary.clone();
+    tokio::spawn(async move {
+        let resp = http_client
+            .post(format!("{}/internal/index-code-sample", agent_url))
+            .header("X-Internal-Key", &internal_key)
+            .json(&json!({
+                "sample_id": sample_id,
+                "summary_text": summary_clone,
+            }))
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await;
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                tracing::info!("auto page-bad sample {} 向量化已提交", sample_id);
+            }
+            Ok(r) => tracing::warn!(
+                "auto page-bad sample {} 向量化非 2xx: {}",
+                sample_id,
+                r.status()
+            ),
+            Err(e) => tracing::warn!(
+                "auto page-bad sample {} 向量化调用失败: {}",
+                sample_id,
+                e
+            ),
+        }
     });
 }

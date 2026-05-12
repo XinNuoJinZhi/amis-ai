@@ -203,6 +203,13 @@ async fn main() {
         "CREATE INDEX IF NOT EXISTS idx_code_samples_tags        ON code_samples USING GIN (tags)"
     ).await;
 
+    // 1.6 W1 · A：code_samples 加 source_page_id 列（page-bad 自动入库时溯源到原 page）
+    // 与已有 source_task_id 配套；手动入库 / sample 级自动回流仍为 null
+    let _ = db.execute_unprepared(
+        "ALTER TABLE code_samples
+            ADD COLUMN IF NOT EXISTS source_page_id INT NULL"
+    ).await;
+
     // 1.4 B.1 双路召回：code_samples 加 keyword_index text[] + GIN 索引
     // 入库时由 Python keyword_extractor 从 amis_json 提关键字（type/subType/api）
     // 召回时与 query_amis_json 提取的关键字做交集，每命中 +0.06，上限 +0.3
@@ -293,6 +300,9 @@ async fn main() {
          ('rag.judge.batch_concurrency',     '3',             '批量评分并发', NOW()),
          ('rag.judge.auto_negative_on_bad',  'false',         '1.4 B.3a：评委 verdict=bad 时自动 mark is_negative（默认关闭，admin 评估后开启）', NOW()),
          ('rag.judge.page_mode',             'disabled',      '1.4 B.3b：page 级评委模式 disabled / manual / auto_on_complete', NOW()),
+         ('rag.judge.auto_page_negative',    'false',         '1.6 W1 A：page judge verdict=bad 时自动入库 code_samples (pending_review + is_negative)；默认关', NOW()),
+         ('rag.judge.auto_page_negative_min_confidence', '0.85', '1.6 W1 A：自动入库的 confidence 阈值（< 阈值不入库，旧模型不返回时回退 0.5）', NOW()),
+         ('rag.judge.auto_page_negative_kind','structural',    '1.6 W1 A：自动入库行的 negative_kind（structural / stylistic / full）', NOW()),
          ('llm.routing.category_tier_overrides_json',
                                               '{\"static_page\":\"fast\",\"data_table\":\"balanced\",\"multipage_dashboard\":\"strong\",\"oa_form\":\"strong\",\"ecommerce\":\"strong\",\"admin_settings\":\"balanced\",\"zc_business\":\"strong\"}',
                                                               '1.4 A.2：业务类别 → tier 覆盖表（auto 模式按 category 覆盖 score 决策；__other__ 不配则保持原 score 路径）', NOW()),

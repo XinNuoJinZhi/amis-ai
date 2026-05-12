@@ -42,6 +42,8 @@ pub struct Model {
     pub hit_count: i32,
     /// 来源任务（可选；冷启动手动入库时为 null）
     pub source_task_id: Option<i32>,
+    /// 1.6 W1 · A：page-bad 自动入库时溯源到原 page（与 source_task_id 配套；手动入库为 null）
+    pub source_page_id: Option<i32>,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 
