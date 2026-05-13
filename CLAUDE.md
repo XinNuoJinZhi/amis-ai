@@ -31,9 +31,6 @@ amis-ai 是「AI 驱动的低代码飞轮」产品，含正反两条链路：
 - 后端 Rust 遵循 `cargo fmt` / `cargo clippy`
 - 前端 TypeScript 严格模式
 - Python 代码遵循 PEP 8
-- **未经用户允许，不主动提交代码、不主动启动测试服务（`npm dev` / `cargo run` 等）**
-- **每次回答完检查项目根目录**，有 `tmpclaude-xxxx-cwd` / `nul` 等垃圾文件立即删除
-- `.gitignore` 应排除 `tmpclaude-*-cwd` / `nul`
 
 ### claw-code 工作约束
 
