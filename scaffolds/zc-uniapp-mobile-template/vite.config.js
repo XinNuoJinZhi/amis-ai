@@ -38,7 +38,7 @@ export default (command, mode) => {
 	server: {
 			host: true,
 			// open: true,
-			port: 5200,
+			port: 5173,
 			hmr: {
 				overlay: true,
 			},
