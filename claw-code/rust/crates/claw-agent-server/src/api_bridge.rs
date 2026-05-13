@@ -180,12 +180,60 @@ impl ProviderRuntimeClient {
 
 impl ApiClient for ProviderRuntimeClient {
     fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
-        let started = std::time::Instant::now();
-        let result = self.stream_inner(&request);
-        let elapsed_ms = started.elapsed().as_millis() as u64;
-        // 2026-04-25 tracelog：每轮 LLM 调用结束时落盘（broadcast → backend tracelog）
-        emit_llm_call_snapshot(&self.event_tx, &self.model, &request, &result, elapsed_ms);
-        result
+        // 2026-05-13 (amis-ai 1.6 W3)：LLM 调用瞬时网络故障重试 — task 355 实证显示
+        // d.vencho.cn:30011 有 intermittent connect timeout（前 6 次 1-2s 成功，
+        // 第 7 次 30s connect timeout），单次失败 = task 全挂太脆弱。
+        //   - 最多重试 2 次（共 3 次尝试），指数退避 2s/4s
+        //   - 只重试 transient connection error（"Connect error" / "timed out" /
+        //     "connection refused" / "EOF"），不重试 4xx/422 等客户端语义错误
+        //   - 每次尝试都 emit llm_call_snapshot，audit trail 完整
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut last_err: Option<RuntimeError> = None;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let started = std::time::Instant::now();
+            let result = self.stream_inner(&request);
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            emit_llm_call_snapshot(&self.event_tx, &self.model, &request, &result, elapsed_ms);
+
+            match result {
+                Ok(events) => {
+                    if attempt > 1 {
+                        tracing::info!(
+                            "LLM call succeeded after {} attempts (elapsed {}ms)",
+                            attempt,
+                            elapsed_ms
+                        );
+                    }
+                    return Ok(events);
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    let retryable = msg.contains("Connect error")
+                        || msg.contains("connection timed out")
+                        || msg.contains("connection refused")
+                        || msg.contains("connection reset")
+                        || msg.contains("EOF")
+                        || msg.contains("dns error");
+                    if retryable && attempt < MAX_ATTEMPTS {
+                        let backoff_secs = 2u64 << (attempt - 1); // 2s, 4s
+                        tracing::warn!(
+                            "LLM call attempt {}/{} failed (retryable) after {}ms: {}; \
+                             retrying in {}s",
+                            attempt,
+                            MAX_ATTEMPTS,
+                            elapsed_ms,
+                            msg,
+                            backoff_secs
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(backoff_secs));
+                        last_err = Some(e);
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| RuntimeError::new("LLM 重试失败".to_string())))
     }
 }
 
