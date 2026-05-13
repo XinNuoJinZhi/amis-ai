@@ -1,0 +1,9 @@
+prompt_id,prompt_title,page_count,strategy,execution_strategy,reuse_strategy,runner_wall_sec,task_id,task_status,pages_done,pages_total,pass_rate,reuse_rate,import_count,file_count,llm_calls,llm_total_ms,total_dur_sec,rag_ok,rag_samples_total,rag_samples_with_kw,keyword_hits_sum,source_teams_concat
+rs1_employee_directory,RS1 · 内部员工目录与档案,3,r4_baseline,isolated,r4_none,84.9,332,succeeded,2,3,0.667,0.0,0,2,33,83830,66,True,3,0,0,"baidu-amis,zc-amis-builtin"
+rs2_sales_bi_dashboard,RS2 · 销售数据看板,3,r4_baseline,isolated,r4_none,60.1,333,succeeded,3,3,1.0,0.0,0,3,37,45870,51,True,3,0,0,"baidu-amis,zc-amis-builtin"
+rs3_oa_leave_flow,RS3 · OA 请假流程,3,r4_baseline,isolated,r4_none,60.3,334,succeeded,2,3,0.667,0.0,0,3,30,69932,50,True,3,0,0,"baidu-amis,zc-amis-builtin"
+rs4_workorder_dynamic,RS4 · 客户服务工单（动态表单）,3,r4_baseline,isolated,r4_none,59.9,335,succeeded,3,3,1.0,0.0,0,3,31,96283,54,True,3,0,0,"baidu-amis,zc-amis-builtin"
+rs5_crm_customer,RS5 · 客户档案与销售记录,3,r4_baseline,isolated,r4_none,63.2,336,succeeded,2,3,0.667,0.0,0,1,54,108440,55,True,3,0,0,baidu-amis
+rs6_org_permission,RS6 · 组织架构与权限矩阵,3,r4_baseline,isolated,r4_none,45.9,337,succeeded,3,3,1.0,0.0,0,3,37,54913,42,True,3,0,0,"baidu-amis,zc-amis-builtin"
+rs7_asset_repair,RS7 · 资产管理与报修工单,3,r4_baseline,isolated,r4_none,45.1,338,succeeded,3,3,1.0,0.0,0,2,30,59712,37,True,3,0,0,baidu-amis
+rs8_project_collab,RS8 · 项目协作看板,3,r4_baseline,isolated,r4_none,49.0,339,succeeded,2,3,0.667,0.0,0,2,18,64615,37,True,3,0,0,baidu-amis

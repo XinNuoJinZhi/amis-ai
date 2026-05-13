@@ -177,6 +177,23 @@ def collect_metrics(task_id: int) -> dict[str, Any]:
         WHERE task_id = {task_id} AND event_type = 'rag_recorded'
     """).strip() == "t"
 
+    # 6) 1.6 W2：召回敏感 A/B 对照需要的两个指标 — source_teams_concat / keyword_hits_sum
+    # 从 rag_samples_injected event 的 data.results[] 里聚合
+    rag_meta_row = psql(f"""
+        SELECT
+          COALESCE(STRING_AGG(DISTINCT r->>'source_team', ','), '') AS teams,
+          COALESCE(SUM((r->>'keyword_hits')::int), 0) AS kw_sum,
+          COUNT(*) AS samples_total,
+          COUNT(*) FILTER (WHERE (r->>'keyword_hits')::int > 0) AS samples_with_kw
+        FROM project_task_event,
+             jsonb_array_elements((payload::jsonb)->'data'->'results') AS r
+        WHERE task_id = {task_id} AND event_type = 'rag_samples_injected'
+    """).split("|")
+    source_teams_concat = rag_meta_row[0] if rag_meta_row and len(rag_meta_row) > 0 else ""
+    keyword_hits_sum = int(rag_meta_row[1]) if len(rag_meta_row) > 1 and rag_meta_row[1] else 0
+    rag_samples_total = int(rag_meta_row[2]) if len(rag_meta_row) > 2 and rag_meta_row[2] else 0
+    rag_samples_with_kw = int(rag_meta_row[3]) if len(rag_meta_row) > 3 and rag_meta_row[3] else 0
+
     return {
         "task_id": task_id,
         "task_status": task_status,
@@ -190,6 +207,11 @@ def collect_metrics(task_id: int) -> dict[str, Any]:
         "llm_total_ms": llm_total_ms,
         "total_dur_sec": total_dur_sec,
         "rag_ok": rag_ok,
+        # 1.6 W2 召回敏感指标
+        "rag_samples_total": rag_samples_total,
+        "rag_samples_with_kw": rag_samples_with_kw,
+        "keyword_hits_sum": keyword_hits_sum,
+        "source_teams_concat": source_teams_concat,
     }
 
 
