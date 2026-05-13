@@ -1905,7 +1905,10 @@ async fn fetch_rag_extra_sections(
             "thumbs_mode": thumbs_mode,
             "hit_count_enabled": hit_count_enabled,
         }))
-        .timeout(std::time::Duration::from_secs(3))
+        // 1.6 W3：从 3s 提到 15s — 评测期冷启动实测 task 340 在 3s 超时
+        //         （embedding 模型 ollama qwen3-embedding:4b 首调加载需 5-10s）
+        //         15s 对线上稳态调用仍足够"快失败"，对冷启动留余量
+        .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
     {
@@ -2024,7 +2027,8 @@ async fn fetch_rag_extra_sections(
                 "top_k": neg_top_k,
                 "only_structural": true,
             }))
-            .timeout(std::time::Duration::from_secs(3))
+            // 1.6 W3：与正向 search 一致提到 15s，避冷启动超时
+            .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
         {
