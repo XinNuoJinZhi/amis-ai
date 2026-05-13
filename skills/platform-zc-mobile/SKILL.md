@@ -49,6 +49,31 @@ scaffold `pages/` 下已自带的业务页（**修改而非重写**）：
 - `sheep/components/` — 业务组件（s-goods-card / s-cart-bar 等）
 - `sheep/hooks/` — 业务 hooks（usePay / useAddress 等）
 
+## ⚠️ #1 高频陷阱：sourceDir 是项目根，不是 `src/`
+
+`zc-uniapp-mobile-template` (shopro) 的 `package.json` dev 命令是 `UNI_INPUT_DIR=. uni --host` —— **uni 以项目根目录作为 sourceDir**，不是常规 uniapp 的 `src/` 子目录。
+
+**所有新增页面 / API / 组件文件必须写在项目根目录下，而不是 `src/` 下**：
+
+| ✅ 正确路径 | ❌ 错误路径（vite 找不到，编译报 "Failed to resolve import"） |
+|---|---|
+| `/workspace/pages/<entity>/<entity>.vue` | `/workspace/src/pages/<entity>/<entity>.vue` |
+| `/workspace/sheep/api/<entity>.js` 或 `/workspace/api/<entity>.js` | `/workspace/src/api/<entity>.js` |
+| `/workspace/components/<name>.vue` 或 shopro 的 `/workspace/sheep/components/` | `/workspace/src/components/<name>.vue` |
+| `/workspace/utils/<helper>.ts` | `/workspace/src/utils/<helper>.ts` |
+| `/workspace/pages.json`（**在项目根，不是 src 下**） | `/workspace/src/pages.json` |
+
+**判别方法**（写文件前先 read 验证）：
+
+```bash
+# 看 package.json 的 dev 命令，UNI_INPUT_DIR=. → 项目根作 sourceDir
+read_file package.json | grep UNI_INPUT_DIR
+# 或者直接看根目录有没有 pages/ 文件夹
+bash "ls /workspace/pages/ | head -5"   # 应有 goods/order/index 等业务页
+```
+
+对比 `uniapp-wot-h5-template` 用的是常规 `src/` 结构（无 UNI_INPUT_DIR 环境变量）—— 两个模板**路径策略不同**，不能套用经验。
+
 ## ZC 特有协议与约定
 
 ### apicenter 数据源协议
