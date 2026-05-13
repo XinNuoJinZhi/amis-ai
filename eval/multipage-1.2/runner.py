@@ -177,6 +177,15 @@ def collect_metrics(task_id: int) -> dict[str, Any]:
         WHERE task_id = {task_id} AND event_type = 'rag_recorded'
     """).strip() == "t"
 
+    # 6.5) 1.6 W3：失败 page 详情（route_path + 错误摘要），方便 csv 直接定位失败 case
+    failed_pages_brief = psql(f"""
+        SELECT COALESCE(STRING_AGG(
+            route_path || ':' || REPLACE(LEFT(COALESCE(error_msg, ''), 60), '|', '_'),
+            ' | ' ORDER BY page_idx
+        ), '') FROM project_task_page
+        WHERE task_id = {task_id} AND status = 'failed'
+    """)
+
     # 6) 1.6 W2：召回敏感 A/B 对照需要的两个指标 — source_teams_concat / keyword_hits_sum
     # 从 rag_samples_injected event 的 data.results[] 里聚合
     rag_meta_row = psql(f"""
@@ -212,6 +221,8 @@ def collect_metrics(task_id: int) -> dict[str, Any]:
         "rag_samples_with_kw": rag_samples_with_kw,
         "keyword_hits_sum": keyword_hits_sum,
         "source_teams_concat": source_teams_concat,
+        # 1.6 W3：失败 page 详情
+        "failed_pages_brief": failed_pages_brief,
     }
 
 
