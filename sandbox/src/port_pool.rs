@@ -27,9 +27,25 @@ impl PortPool {
     pub fn allocate(&self) -> Result<u16, PortPoolError> {
         let mut set = self.allocated.lock().unwrap();
         for port in self.range.clone() {
-            if !set.contains(&port) {
-                set.insert(port);
-                return Ok(port);
+            if set.contains(&port) {
+                continue;
+            }
+            // 2026-05-13：sandbox-service restart 后 HashSet 清空但宿主机上历史
+            // amis-ai-sandbox-* 容器仍占着原端口（amis-ai 1.6 W3 加了「保护 active
+            // sandbox」之后更常见）→ try-bind 验证端口实际可用，避免 docker run
+            // 时撞 "port is already allocated"
+            match std::net::TcpListener::bind(("127.0.0.1", port)) {
+                Ok(listener) => {
+                    drop(listener); // 立刻释放，让 docker 再 bind
+                    set.insert(port);
+                    return Ok(port);
+                }
+                Err(_) => {
+                    // 端口被外部进程/容器占着，先标 allocated 让本进程不再尝试
+                    // （兜底防御：不依赖外部释放才能恢复分配能力）
+                    set.insert(port);
+                    continue;
+                }
             }
         }
         Err(PortPoolError::Exhausted)
