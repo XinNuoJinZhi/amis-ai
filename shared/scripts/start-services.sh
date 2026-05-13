@@ -9,6 +9,8 @@
 #
 #   --rebuild     强制对三个 Rust crate 跑 cargo build（忽略 mtime 判断）
 #   --no-rebuild  跳过所有 cargo build（哪怕检测到源码更新，也用现有二进制）
+#   --purge-sandboxes  stop/restart 时强制清掉所有 amis-ai-sandbox-* 容器
+#                      （默认会保留 DB status=running/succeeded 的 task 容器，避免误杀预览）
 #
 #   环境变量 AMISAI_REBUILD=always / never 等价于上面两个开关。
 #
@@ -211,9 +213,47 @@ stop_all() {
   for port in 8080 8090 8091; do
     fuser -k -n tcp "$port" 2>/dev/null && echo "🛑 已释放 :$port"
   done
-  # 清理 sandbox 容器
-  docker ps --filter "name=amis-ai-sandbox" -q 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1
+
+  # 清理 sandbox 容器（2026-05-13 起：默认保护 running / succeeded task 的容器，
+  # 避免 restart 误杀用户正在用的预览；--purge-sandboxes 强制全清回退旧行为）
+  cleanup_sandboxes
   echo "✅ 清理完成"
+}
+
+# 列出"应保留"的 task_id（DB 里 status 仍 running/succeeded 的）。
+# DB 不可达时返回空串 → fallback 清所有（旧行为，安全降级）。
+list_active_task_ids() {
+  PGPASSWORD="${PGPASSWORD:-amis_ai_dev}" psql \
+    -h "${PGHOST:-localhost}" -U "${PGUSER:-amis_ai}" -d "${PGDATABASE:-amis_ai}" \
+    -tA -c "SELECT id FROM project_generation_task
+            WHERE status IN ('running','succeeded')
+              AND sandbox_id IS NOT NULL" 2>/dev/null | tr '\n' ' '
+}
+
+cleanup_sandboxes() {
+  if [[ "${PURGE_SANDBOXES:-no}" == "yes" ]]; then
+    echo "🧹 --purge-sandboxes：强制清所有 amis-ai-sandbox 容器"
+    docker ps -a --filter "name=amis-ai-sandbox" -q 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1
+    return
+  fi
+  local keep_ids
+  keep_ids=" $(list_active_task_ids)"
+  local kept=0 removed=0
+  for name in $(docker ps -a --filter "name=amis-ai-sandbox" --format '{{.Names}}' 2>/dev/null); do
+    # 容器名形如 amis-ai-sandbox-task-357
+    local tid="${name##*-task-}"
+    if [[ "$keep_ids" == *" $tid "* ]]; then
+      kept=$((kept+1))
+      continue
+    fi
+    docker rm -f "$name" >/dev/null 2>&1 && removed=$((removed+1))
+  done
+  if [[ $kept -gt 0 ]]; then
+    echo "🛡  保护 $kept 个 active task 的 sandbox（DB status=running/succeeded）"
+  fi
+  if [[ $removed -gt 0 ]]; then
+    echo "🗑  清掉 $removed 个非 active sandbox"
+  fi
 }
 
 status() {
@@ -338,8 +378,9 @@ for arg in "$@"; do
   case "$arg" in
     --rebuild) REBUILD_MODE="always" ;;
     --no-rebuild) REBUILD_MODE="never" ;;
+    --purge-sandboxes) PURGE_SANDBOXES="yes" ;;
     start|stop|restart|status|check) CMD="$arg" ;;
-    *) echo "未知参数: $arg"; echo "Usage: $0 {start|stop|restart|status|check} [--rebuild|--no-rebuild]"; exit 1 ;;
+    *) echo "未知参数: $arg"; echo "Usage: $0 {start|stop|restart|status|check} [--rebuild|--no-rebuild] [--purge-sandboxes]"; exit 1 ;;
   esac
 done
 
@@ -349,5 +390,5 @@ case "$CMD" in
   restart) stop_all; sleep 2; start_all ;;
   status)  status ;;
   check)   check ;;
-  *) echo "Usage: $0 {start|stop|restart|status|check} [--rebuild|--no-rebuild]"; exit 1 ;;
+  *) echo "Usage: $0 {start|stop|restart|status|check} [--rebuild|--no-rebuild] [--purge-sandboxes]"; exit 1 ;;
 esac
