@@ -140,7 +140,7 @@ async fn persist_event(db: &sea_orm::DatabaseConnection, task_id: i32, json_text
 
     let record = project_task_event::ActiveModel {
         task_id: Set(task_id),
-        event_type: Set(event_type),
+        event_type: Set(event_type.clone()),
         payload: Set(json_text.to_string()),
         created_at: Set(chrono::Utc::now().naive_utc()),
         ..Default::default()
@@ -148,6 +148,35 @@ async fn persist_event(db: &sea_orm::DatabaseConnection, task_id: i32, json_text
 
     if let Err(e) = record.insert(db).await {
         tracing::warn!("failed to persist event for task {}: {}", task_id, e);
+    }
+
+    // 1.6 W3：单页路径 claw session 失败时同步 task 主表 status='failed'
+    //   - 多页路径在 multipage_scheduler::dispatch 末尾已兜底回写
+    //   - 单页路径之前没有 watcher 处理 claw session 终态 → task 352 案例卡死 running 7 小时
+    //   - 只同步 failed（succeeded 由 spawn_dev_status_watcher 在 dev server ready 后判定）
+    //   - WHERE status='running' 保证幂等 + 不覆盖 stopped / succeeded 状态
+    if event_type == "status_change" {
+        let is_failed = serde_json::from_str::<serde_json::Value>(json_text)
+            .ok()
+            .and_then(|v| v.get("data").and_then(|d| d.as_str()).map(String::from))
+            .map(|s| s == "failed")
+            .unwrap_or(false);
+        if is_failed {
+            use sea_orm::{ConnectionTrait, Statement};
+            let sql = format!(
+                "UPDATE project_generation_task SET status = 'failed', updated_at = NOW() \
+                 WHERE id = {} AND status = 'running'",
+                task_id
+            );
+            if let Err(e) = db
+                .execute(Statement::from_string(db.get_database_backend(), sql))
+                .await
+            {
+                tracing::warn!("task {} status sync failed: {}", task_id, e);
+            } else {
+                tracing::info!("task {} synced to failed (claw status_change=failed)", task_id);
+            }
+        }
     }
 }
 
