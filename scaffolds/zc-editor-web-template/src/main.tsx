@@ -8,7 +8,7 @@ import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
 import { setNavigator } from './shims/umi-max';
 import { InitialStateProvider } from './initialState';
-import App from './App';
+import App from './__AppRoot_tmp';
 import zhCNMessages from './locales/zh-CN';
 import './global.less';
 
