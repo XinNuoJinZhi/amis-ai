@@ -1,7 +1,8 @@
 use axum::{
     routing::{get, post, put},
-    Router,
+    Json, Router,
 };
+use serde_json::json;
 use sea_orm::{Database, DatabaseConnection, ConnectionTrait, EntityTrait, PaginatorTrait, Set, Schema, ActiveModelTrait};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -724,8 +725,15 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn health_check() -> &'static str {
-    "ok"
+/// 健康检查 + 服务身份探测（1.6 W3 加）
+///
+/// 返回带 `service` 字段的 JSON，让 start-services.sh status 能区分
+/// 「真 amis-ai backend」vs 「别的进程占用同端口」（如 worksy-backend）。
+async fn health_check() -> Json<serde_json::Value> {
+    Json(json!({
+        "service": "amis-ai-backend",
+        "status": "ok",
+    }))
 }
 
 async fn seed_users(db: &DatabaseConnection) {

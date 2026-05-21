@@ -163,7 +163,33 @@ start_all() {
   start_python_agent
 
   sleep 2
+  # 1.6 W3：等 backend 和 agent 都真正 ready 再退出，避免冷启动空窗 → 业务任务 category=NULL
+  #   (#3 真因：backend 重启后第一波任务进来时 agent FastAPI 还在 lifespan/uvicorn workers
+  #    冷启动 + pgvector 连池初始化，5s timeout 触发 → 落入 (None, None) → 写 NULL 而非
+  #    W1.1 fix 的 __other__/0.0；累计 121/237 个历史 task 全栽在重启日附近)
+  wait_for_health "backend" "http://localhost:8080/api/health" "amis-ai-backend"
+  wait_for_health "agent"   "http://localhost:$AGENT_PORT/health"  "amis-ai-agent"
   status
+}
+
+# 1.6 W3：poll 指定 URL 直到返回 JSON 含期望 service 字段（最多等 30s），用于
+#   start_all 末尾等服务真正暖（避免业务任务踩冷启动）。
+# 用法：wait_for_health <label> <url> <expected_service>
+wait_for_health() {
+  local label="$1"
+  local url="$2"
+  local expect="$3"
+  local elapsed=0
+  while (( elapsed < 30 )); do
+    if curl -s --max-time 1 "$url" 2>/dev/null | grep -q "\"$expect\""; then
+      echo "  ⏱  $label warmed in ${elapsed}s"
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  echo "  ⚠️  $label 等了 ${elapsed}s 仍未 ready（$url 没返回 \"$expect\"），继续但首批业务可能踩冷启动"
+  return 1
 }
 
 # 启动 Python agent（正向飞轮 + RAG 入库/检索）。
@@ -267,7 +293,24 @@ status() {
       "$AGENT_PORT") label=":$AGENT_PORT agent (Python)" ;;
     esac
     if is_port_listening "$port"; then
-      echo "  ✅ $label UP"
+      # 1.6 W3：端口 UP 时再做身份探测，避免别的进程占同端口被误判
+      # backend 探 /api/health（1.6 后返回 {"service":"amis-ai-backend",...}）
+      if [[ "$port" == "8080" ]]; then
+        local body
+        body=$(curl -s --max-time 2 "http://localhost:8080/api/health" 2>/dev/null || true)
+        if echo "$body" | grep -q '"amis-ai-backend"'; then
+          echo "  ✅ $label UP"
+        elif [[ -z "$body" ]]; then
+          echo "  ⚠️  $label PORT UP 但 /api/health 无响应（可能正在启动 / 非 amis-ai 进程）"
+        else
+          # 端口被别的服务占了（如 worksy-backend），单独提示
+          local other
+          other=$(echo "$body" | grep -oP '"service":"\K[^"]+' || echo "未知")
+          echo "  ⚠️  $label PORT 被【$other】占用，非 amis-ai-backend！"
+        fi
+      else
+        echo "  ✅ $label UP"
+      fi
     else
       echo "  ❌ $label DOWN"
     fi
