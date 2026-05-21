@@ -75,8 +75,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn health() -> &'static str {
-    "ok"
+/// 1.6 W3：返回带 service 字段的 JSON，让 start-services.sh status 能区分
+/// 「真 sandbox-service」vs 「别的进程占用同端口」。
+async fn health() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "service": "sandbox-service",
+        "status": "ok",
+    }))
 }
 
 async fn debug_state(State(state): State<SharedState>) -> Json<serde_json::Value> {

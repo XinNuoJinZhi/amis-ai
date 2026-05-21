@@ -1,6 +1,6 @@
 use axum::{
     routing::{get, post},
-    Router,
+    Json, Router,
 };
 use std::{net::SocketAddr, sync::Arc};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -71,8 +71,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn health() -> &'static str {
-    "ok"
+/// 1.6 W3：返回带 service 字段的 JSON，让 start-services.sh status 能区分
+/// 「真 claw-agent-server」vs 「别的进程占用同端口」。
+async fn health() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "service": "claw-agent-server",
+        "status": "ok",
+    }))
 }
 
 /// 准备 Skills 加载所需的环境变量。

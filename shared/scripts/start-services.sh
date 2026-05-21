@@ -167,8 +167,10 @@ start_all() {
   #   (#3 真因：backend 重启后第一波任务进来时 agent FastAPI 还在 lifespan/uvicorn workers
   #    冷启动 + pgvector 连池初始化，5s timeout 触发 → 落入 (None, None) → 写 NULL 而非
   #    W1.1 fix 的 __other__/0.0；累计 121/237 个历史 task 全栽在重启日附近)
-  wait_for_health "backend" "http://localhost:8080/api/health" "amis-ai-backend"
-  wait_for_health "agent"   "http://localhost:$AGENT_PORT/health"  "amis-ai-agent"
+  wait_for_health "sandbox"    "http://localhost:8091/health"        "sandbox-service"
+  wait_for_health "claw-agent" "http://localhost:8090/health"        "claw-agent-server"
+  wait_for_health "backend"    "http://localhost:8080/api/health"    "amis-ai-backend"
+  wait_for_health "agent"      "http://localhost:$AGENT_PORT/health" "amis-ai-agent"
   status
 }
 
@@ -294,19 +296,25 @@ status() {
     esac
     if is_port_listening "$port"; then
       # 1.6 W3：端口 UP 时再做身份探测，避免别的进程占同端口被误判
-      # backend 探 /api/health（1.6 后返回 {"service":"amis-ai-backend",...}）
-      if [[ "$port" == "8080" ]]; then
+      # 4 个服务都暴露 /health（或 /api/health）返回 {"service":"<name>",...}
+      local probe_url="" expected=""
+      case "$port" in
+        8080) probe_url="http://localhost:8080/api/health"; expected="amis-ai-backend" ;;
+        8090) probe_url="http://localhost:8090/health";     expected="claw-agent-server" ;;
+        8091) probe_url="http://localhost:8091/health";     expected="sandbox-service" ;;
+        "$AGENT_PORT") probe_url="http://localhost:$AGENT_PORT/health"; expected="amis-ai-agent" ;;
+      esac
+      if [[ -n "$probe_url" ]]; then
         local body
-        body=$(curl -s --max-time 2 "http://localhost:8080/api/health" 2>/dev/null || true)
-        if echo "$body" | grep -q '"amis-ai-backend"'; then
+        body=$(curl -s --max-time 2 "$probe_url" 2>/dev/null || true)
+        if echo "$body" | grep -q "\"$expected\""; then
           echo "  ✅ $label UP"
         elif [[ -z "$body" ]]; then
-          echo "  ⚠️  $label PORT UP 但 /api/health 无响应（可能正在启动 / 非 amis-ai 进程）"
+          echo "  ⚠️  $label PORT UP 但 $probe_url 无响应（可能正在启动 / 非 amis-ai 进程）"
         else
-          # 端口被别的服务占了（如 worksy-backend），单独提示
           local other
           other=$(echo "$body" | grep -oP '"service":"\K[^"]+' || echo "未知")
-          echo "  ⚠️  $label PORT 被【$other】占用，非 amis-ai-backend！"
+          echo "  ⚠️  $label PORT 被【$other】占用，非 $expected！"
         fi
       else
         echo "  ✅ $label UP"
