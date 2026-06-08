@@ -33,6 +33,11 @@ pub struct AppState {
     pub skills_root: String,
     /// 底座模板注册表（2026-04 技术栈解耦重构，从 scaffolds/registry.yaml 启动加载）
     pub template_registry: Arc<services::template_registry::TemplateRegistry>,
+    /// 2026-06-08：多页面任务实时事件广播。`multipage_session_watcher` 把子页面
+    /// session 的每条事件落库后，同时 broadcast `(task_id, event_json)`；
+    /// `project_events::handle_ws` 的 MultipageIdle 分支订阅并实时转发给前端，
+    /// 让多页面任务的 Chat 面板与单页一样能实时滚动 LLM 对话。
+    pub multipage_event_tx: tokio::sync::broadcast::Sender<(i32, String)>,
 }
 
 #[tokio::main]
@@ -536,6 +541,9 @@ async fn main() {
         .build()
         .expect("无法创建 HTTP 客户端");
 
+    // 多页实时广播通道（容量 1024；订阅者滞后丢增量由前端 mount 时的 history 回放兜底）
+    let (multipage_event_tx, _) = tokio::sync::broadcast::channel::<(i32, String)>(1024);
+
     let state = AppState {
         db,
         http_client,
@@ -545,6 +553,7 @@ async fn main() {
         workdir_root,
         skills_root,
         template_registry,
+        multipage_event_tx,
     };
 
     // Synthetic Honey：后台定时清理过期的 Skill 起草会话（每 30min 扫一次 expires_at < now）

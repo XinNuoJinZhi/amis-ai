@@ -22,6 +22,64 @@ use crate::entity::{project_generation_task, project_task_event, project_task_me
 use crate::utils::jwt;
 use crate::AppState;
 
+/// WS 连接时的处理模式（2026-06-08 修 regression）。
+///
+/// 历史坑：`fd875f0` 引入确定性翻译器时，把 `claw_session_id == None` 一律当成
+/// 「翻译器任务」发 `translator_idle`。但**多页面任务的主 task 天生 `claw_session_id`
+/// 也为 None**（真正的 LLM 会话在各子页面的子 session 上，由 `multipage_session_watcher`
+/// 订阅并把事件落库到本 task），导致多页面任务被误显示成「确定性翻译器生成」。
+#[derive(Debug, PartialEq, Eq)]
+enum WsMode {
+    /// 有单一 LLM session：连 claw-agent 转发实时流（单页 IDE 路径）
+    Live,
+    /// 多页面主任务：无单一 session，事件已由 watcher 落库；
+    /// WS 走 keep-alive + 实时转发（broadcast），绝不能发 translator_idle
+    MultipageIdle,
+    /// 确定性翻译器任务：无 LLM session，发 translator_idle 让前端显示专属说明
+    TranslatorIdle,
+}
+
+/// 纯函数：根据 `(claw_session_id, page_count)` 决定 WS 处理模式。
+///
+/// - 有非空 session → `Live`
+/// - 无 session 且 `page_count > 1` → `MultipageIdle`（多页面主任务，**不是**翻译器）
+/// - 无 session 且单页 → `TranslatorIdle`
+fn resolve_ws_mode(claw_session_id: Option<&str>, page_count: i32) -> WsMode {
+    match claw_session_id {
+        Some(s) if !s.trim().is_empty() => WsMode::Live,
+        _ if page_count > 1 => WsMode::MultipageIdle,
+        _ => WsMode::TranslatorIdle,
+    }
+}
+
+#[cfg(test)]
+mod ws_mode_tests {
+    use super::{resolve_ws_mode, WsMode};
+
+    #[test]
+    fn live_when_session_present() {
+        assert_eq!(resolve_ws_mode(Some("sess-123"), 1), WsMode::Live);
+        // 即便 page_count>1，只要主 task 真持有 session 也走 Live
+        assert_eq!(resolve_ws_mode(Some("sess-123"), 3), WsMode::Live);
+    }
+
+    #[test]
+    fn multipage_idle_when_no_session_but_multipage() {
+        // ⭐ regression 核心：多页主任务 session 为空，必须走 MultipageIdle 而非 TranslatorIdle
+        assert_eq!(resolve_ws_mode(None, 2), WsMode::MultipageIdle);
+        assert_eq!(resolve_ws_mode(None, 5), WsMode::MultipageIdle);
+        // 空字符串等同无 session
+        assert_eq!(resolve_ws_mode(Some(""), 2), WsMode::MultipageIdle);
+        assert_eq!(resolve_ws_mode(Some("  "), 2), WsMode::MultipageIdle);
+    }
+
+    #[test]
+    fn translator_idle_when_no_session_single_page() {
+        assert_eq!(resolve_ws_mode(None, 1), WsMode::TranslatorIdle);
+        assert_eq!(resolve_ws_mode(Some(""), 1), WsMode::TranslatorIdle);
+    }
+}
+
 // WebSocket 端点：聚合转发 claw-agent-server 的事件流
 pub async fn ws_events(
     State(state): State<AppState>,
@@ -48,9 +106,16 @@ async fn handle_ws(socket: WebSocket, state: AppState, task_id: i32) {
     // 直接 fs_write + dev_start 跳过了 claw-agent），claw_session_id 为 None。
     // 不再当作错误关闭，而是进入「idle keep-alive」模式：发一条 translator_idle 通知，
     // 然后保持连接等客户端心跳/close。前端通过 REST history 拿到 translation_succeeded 等事件。
-    let claw_session = match task.claw_session_id {
-        Some(ref s) => s.clone(),
-        None => {
+    // 2026-06-08 修 regression：claw_session_id == None 不再一律当翻译器任务。
+    // 多页面主任务（page_count > 1）的 session 同样为 None（真正的会话在各子页面），
+    // 必须与翻译器任务区分，否则前端误显示「确定性翻译器生成」（详见 resolve_ws_mode）。
+    let claw_session = match resolve_ws_mode(task.claw_session_id.as_deref(), task.page_count) {
+        WsMode::Live => task.claw_session_id.clone().unwrap_or_default(),
+        WsMode::MultipageIdle => {
+            handle_ws_multipage_idle(socket, state, task_id).await;
+            return;
+        }
+        WsMode::TranslatorIdle => {
             handle_ws_translator_idle(socket, task_id).await;
             return;
         }
@@ -607,6 +672,68 @@ async fn handle_ws_translator_idle(socket: WebSocket, task_id: i32) {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// 2026-06-08：多页面主任务的 WS 处理（修 regression）。
+///
+/// 多页面任务没有单一 claw session——真正的 LLM 会话在各子页面的子 session 上，
+/// 由 `multipage_session_watcher` 订阅并把每条事件落库到本 task。前端
+/// `useProjectEvents` mount 时经 REST history 已能拿到全部历史子页面对话事件，
+/// ChatPanel 直接渲染成对话流（与单页一致）。
+///
+/// 这里**绝不发 translator_idle**（那会让前端误显示「确定性翻译器生成」）。
+/// 实时增量：订阅 `multipage_event_tx` broadcast，把 watcher 落库的新事件实时
+/// 转发给前端，让进行中的多页面任务也能像单页一样实时滚动 LLM 对话。
+async fn handle_ws_multipage_idle(socket: WebSocket, state: AppState, task_id: i32) {
+    use futures_util::{SinkExt, StreamExt};
+    let (mut client_tx, mut client_rx) = socket.split();
+
+    // 先订阅、再发 hello——避免 subscribe 之前刚 broadcast 的事件漏掉。
+    let mut rx = state.multipage_event_tx.subscribe();
+
+    // 发一条 multipage_idle 通知：标记这是多页 idle 模式（前端不渲染成对话块）。
+    let hello = serde_json::json!({
+        "type": "multipage_idle",
+        "data": {
+            "task_id": task_id,
+            "reason": "多页面任务：各子页面 LLM 会话事件由 watcher 落库 + 实时广播，前端渲染为对话流",
+        }
+    })
+    .to_string();
+    if client_tx.send(Message::Text(hello)).await.is_err() {
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            // 上游：watcher 落库后广播的子页面事件，过滤出本 task 再转发给前端
+            recv = rx.recv() => {
+                match recv {
+                    Ok((tid, json)) if tid == task_id => {
+                        if client_tx.send(Message::Text(json)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) => {} // 其他 task 的广播，忽略
+                    // 滞后丢了几条：前端 mount 的 history 回放会补全，安全跳过继续收
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            // 下游：客户端心跳 / 断开
+            msg = client_rx.next() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(Message::Ping(data))) => {
+                        if client_tx.send(Message::Pong(data)).await.is_err() {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 }

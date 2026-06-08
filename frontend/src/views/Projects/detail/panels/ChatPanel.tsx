@@ -783,8 +783,12 @@ export default function ChatPanel({ taskId, events, connected, onClose, bordered
         )}
       </div>
       <div ref={scrollRef} style={{ flex: 1, overflow: 'auto' }}>
-        {/* 2026-04-25：翻译器路径任务没 LLM 对话流，显示专属说明而不是 [ WAITING FOR EVENTS ] */}
-        {events.some((e) => e.type === 'translator_idle') ? (
+        {/* 2026-04-25：翻译器路径任务没 LLM 对话流，显示专属说明而不是 [ WAITING FOR EVENTS ]
+            2026-06-08 修 regression：多页面主任务的 claw_session_id 也为 None，曾被后端误发
+            translator_idle。这里加 `blocks.length === 0` 防御——只要 events 里有真对话块
+            （多页面各子页面的 LLM 对话由 watcher 落库、history 回放进来），就渲染对话流，
+            绝不把多页面任务误显示成「确定性翻译器生成」。 */}
+        {events.some((e) => e.type === 'translator_idle') && blocks.length === 0 ? (
           <div
             style={{
               padding: '32px 24px',

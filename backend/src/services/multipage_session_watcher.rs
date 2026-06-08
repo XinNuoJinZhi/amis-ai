@@ -106,6 +106,10 @@ pub async fn wait_session_completed(
         persist_event(&state.db, backend_task_id, &msg).await;
         // 2) tracelog 归档（与单页路径一致；mode=disabled 时是 no-op）
         crate::services::tracelog::route_event(state, backend_task_id, &msg).await;
+        // 2b) 2026-06-08：实时广播给订阅的前端 WS（project_events 的 MultipageIdle 分支）。
+        //     无订阅者时 send 返回 Err，忽略。让进行中的多页面任务也能实时滚动子页面
+        //     LLM 对话，对齐单页推送体验；前端 mount 时的 history 回放兜底滞后丢失。
+        let _ = state.multipage_event_tx.send((backend_task_id, msg.clone()));
 
         // 3) 嗅探 status_change
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&msg) {
